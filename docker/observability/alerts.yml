@@ -1,0 +1,31 @@
+# Prometheus alert rules. Every metric used here is defined in src/medlens (a test checks it).
+groups:
+  - name: medlens-dependencies
+    rules:
+      - alert: MedLensRedisDown
+        expr: min by (instance) (medlens_dependency_up{dependency="redis"}) == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis is unreachable from API instance {{ $labels.instance }}"
+          description: >-
+            The API stays up on its fallbacks (readiness reports "degraded"), but: access-token
+            revocation is skipped for consumer actions (revoked consumer tokens work until they
+            expire, at most 15 minutes) and read from Postgres for privileged sessions; sign-in by
+            SMS code answers 503; permission lookups and rate limits fall back or stop. Restore
+            Redis.
+
+  - name: medlens-auth
+    rules:
+      - alert: MedLensRevocationChecksSkipped
+        expr: sum(increase(medlens_auth_revocation_checks_skipped_total[5m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Access-token revocation checks are being skipped"
+          description: >-
+            {{ $value | humanize }} requests in the last 5 minutes could not check session
+            revocation in Redis. Consumer actions failed open; privileged sessions were checked in
+            Postgres (medlens_auth_revocation_fallbacks_total). Usually accompanies
+            MedLensRedisDown.

@@ -1,0 +1,11 @@
+question,expected_document,answerable
+Has an alert been published about counterfeit Augmentin 1 G?,sample-alert-augmentin.md,yes
+Which batch of Augmentin is counterfeit according to the alert?,sample-alert-augmentin.md,yes
+Is there an alert for NAFDAC number 04-8655?,sample-alert-augmentin.md,yes
+Why was ADALAT LA 30MG batch SEED-A4-2374-B recalled?,sample-recall-adalat.md,yes
+Are other batches of ADALAT LA affected by the recall?,sample-recall-adalat.md,yes
+How do I report a suspected counterfeit medicine?,sample-sop-reporting.md,yes
+What should I record when reporting a suspicious pack?,sample-sop-reporting.md,yes
+What is the correct dose of Augmentin for a child?,,no
+Has NAFDAC approved a malaria vaccine for adults?,,no
+What is the price of Coartem in Kano?,,no

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Tooling
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local configuration and runtime files
+.env
+.env.*
+!.env.example
+celerybeat-schedule*
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Data kept outside Git (e.g. full Greenbook snapshots: seed/PROVENANCE.md)
+data/
+
+# Demo state (scripts/demo.sh): staff password and authenticator secrets
+.demo/
