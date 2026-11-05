@@ -1,5 +1,6 @@
-"""Aggregate queries over scans (no rows about individual people leave this module). Verdicts
-are the ones shown: a case decision's override, else the pipeline's."""
+"""Aggregate queries over scans (no rows about individual people leave this module). Counts use
+the final verdict (after case decisions); accuracy compares the pipeline's verdict with lab
+labels."""
 
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -10,14 +11,11 @@ from sqlalchemy import ColumnElement, Date, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from medlens.modules.control_plane.models import LLMCall
+from medlens.modules.hitl.models import Label
 from medlens.modules.products.models import Product
 from medlens.modules.scans.models import Scan, ScanStatus, Verdict
 
 FLAGGED = (Verdict.SUSPICIOUS, Verdict.UNREGISTERED)
-
-
-def shown_verdict() -> ColumnElement[str]:
-    return func.coalesce(Scan.verdict_override, Scan.verdict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,7 +37,7 @@ async def summary(
         Scan.status == ScanStatus.COMPLETED,
         visible,
     )
-    verdict = shown_verdict()
+    verdict = Scan.final_verdict
     flagged = func.count().filter(verdict.in_([v.value for v in FLAGGED]))
     by_verdict = {
         str(name): int(count)
@@ -107,7 +105,7 @@ async def flagged_by_product_state_week(
             Scan.created_at >= since,
             Scan.created_at < until,
             Scan.status == ScanStatus.COMPLETED,
-            shown_verdict().in_([v.value for v in FLAGGED]),
+            Scan.final_verdict.in_(FLAGGED),
         )
         .group_by(Product.id, Product.nafdac_number, Product.brand_name, Scan.state, week)
         .order_by(week.desc(), Product.brand_name, Scan.state)
@@ -115,4 +113,35 @@ async def flagged_by_product_state_week(
     return [
         ProductCell(product_id, number, brand, state.value if state else None, label, int(count))
         for product_id, number, brand, state, label, count in await session.execute(statement)
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class LabelledCell:
+    scorer_version: str | None
+    pipeline_verdict: str | None
+    lab_outcome: str
+    count: int
+
+
+async def pipeline_verdicts_against_labels(
+    session: AsyncSession, visible: ColumnElement[bool], since: datetime, until: datetime
+) -> list[LabelledCell]:
+    """Labelled scans by scorer version, pipeline verdict and lab outcome (labels recorded in
+    the window)."""
+    statement = (
+        select(Scan.scorer_version, Scan.pipeline_verdict, Label.outcome, func.count())
+        .join(Scan, (Scan.id == Label.scan_id) & (Scan.created_at == Label.scan_created_at))
+        .where(Label.created_at >= since, Label.created_at < until, visible)
+        .group_by(Scan.scorer_version, Scan.pipeline_verdict, Label.outcome)
+        .order_by(Scan.scorer_version, Scan.pipeline_verdict, Label.outcome)
+    )
+    return [
+        LabelledCell(
+            version,
+            verdict.value if verdict else None,
+            outcome.value,
+            int(count),
+        )
+        for version, verdict, outcome, count in await session.execute(statement)
     ]

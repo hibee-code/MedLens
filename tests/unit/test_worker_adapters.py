@@ -11,7 +11,7 @@ from medlens.adapters.embeddings import (
     SentenceTransformerImageEmbedder,
     SentenceTransformerTextEmbedder,
 )
-from medlens.adapters.fakes import FakeBarcode, FakeImageAnalysis
+from medlens.adapters.fakes import FakeBarcode, FakeImageAnalysis, FakeReranker
 from medlens.modules.verification.extraction import from_gs1
 from medlens.workers import runtime
 from tests.support import build_settings
@@ -146,33 +146,60 @@ def test_readers_follow_the_setting(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(runtime.build_readers(real)[2], vision.TesseractOcr)
 
 
-def test_embedders_are_optional(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert runtime.build_embedders(build_settings(embeddings={"enabled": False})) == (None, None)
+def test_the_torch_models_are_an_optional_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MEDLENS_EMBEDDINGS__BACKEND=torch (or missing ONNX exports): sentence-transformers."""
+    disabled = runtime.build_models(build_settings(embeddings={"enabled": False}))
+    assert disabled == runtime.Models()
 
     def unavailable(name: str) -> Any:
         raise OSError("no network to download the model")
 
     import medlens.adapters.embeddings as embeddings
 
-    monkeypatch.setattr(embeddings, "load_sentence_transformer", unavailable)
+    torch = {"enabled": True, "backend": "torch"}
+    monkeypatch.setattr(
+        embeddings.SentenceTransformerImageEmbedder.__init__, "__defaults__", (unavailable,)
+    )
+    assert runtime.build_models(build_settings(embeddings=torch)) == runtime.Models()
+
+    settings = build_settings(embeddings=torch)
+    image_model = StandIn([0.0] * settings.embeddings.image_dimension)
+    text_model = StandIn([0.0] * settings.embeddings.text_dimension)
     monkeypatch.setattr(
         embeddings.SentenceTransformerImageEmbedder.__init__,
         "__defaults__",
-        (unavailable,),
+        (lambda n: image_model,),
     )
-    assert runtime.build_embedders(build_settings(embeddings={"enabled": True})) == (None, None)
+    monkeypatch.setattr(
+        embeddings.SentenceTransformerTextEmbedder.__init__, "__defaults__", (lambda n: text_model,)
+    )
+    monkeypatch.setattr(
+        embeddings.SentenceTransformerReranker.__init__, "__defaults__", (lambda n: object(),)
+    )
+    models = runtime.build_models(settings)
+    assert models.image is not None
+    assert models.text is not None
+    assert models.text.model_version == "intfloat/multilingual-e5-small"
+    assert models.reranker is not None
 
-    stand_in = StandIn([0.0])
+    wrong = StandIn([0.0] * 3)  # a model whose vectors would not fit the columns
     monkeypatch.setattr(
-        embeddings.SentenceTransformerImageEmbedder.__init__, "__defaults__", (lambda n: stand_in,)
+        embeddings.SentenceTransformerImageEmbedder.__init__, "__defaults__", (lambda n: wrong,)
     )
-    monkeypatch.setattr(
-        embeddings.SentenceTransformerTextEmbedder.__init__, "__defaults__", (lambda n: stand_in,)
-    )
-    image, text = runtime.build_embedders(build_settings(embeddings={"enabled": True}))
-    assert image is not None
-    assert text is not None
-    assert text.model_version == "intfloat/multilingual-e5-small"
+    models = runtime.build_models(settings)
+    assert models.image is None
+    assert models.text is not None
+
+
+def test_missing_onnx_exports_fall_back_to_torch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
+    fallback = runtime.Models(reranker=FakeReranker())
+    monkeypatch.setattr(runtime, "_torch_models", lambda settings: fallback)
+
+    settings = build_settings(embeddings={"enabled": True, "onnx_dir": str(tmp_path)})
+
+    assert runtime.build_models(settings) == fallback
 
 
 def test_the_runtime_wires_the_gateway_and_readers() -> None:

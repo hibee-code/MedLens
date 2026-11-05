@@ -104,8 +104,9 @@ class SeedCatalog:
     def _load_alerts(self) -> None:
         with (SEED / "documents" / "index.csv").open(newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
-                if row["kind"] not in {"alert", "recall"}:
-                    continue
+                official = row.get("official") == "true" and row.get("active") == "true"
+                if row["kind"] not in {"alert", "recall"} or not official:
+                    continue  # only official, active notices flag scans
                 pages = extract_pages((SEED / "documents" / row["file"]).read_bytes(), "text/plain")
                 for piece in chunk(pages):
                     for number in find_nafdac_numbers(piece.text):
@@ -136,13 +137,14 @@ class SeedCatalog:
         del batch_id, since, exclude_scan  # no scan history in the eval
         return BatchSpread(geocells=0, states=frozenset())
 
-    def published_alert(self, nafdac_number: str, batch_number: str | None) -> AlertFacts | None:
-        return self.alerts.get((nafdac_number, batch_number or "")) or self.alerts.get(
-            (nafdac_number, "")
-        )
+    def published_alerts(self, nafdac_number: str, batch_number: str | None) -> list[AlertFacts]:
+        keys = {(nafdac_number, ""), (nafdac_number, batch_number or "")}
+        return [self.alerts[key] for key in keys if key in self.alerts]
 
-    def reference_similarity(self, product_id: UUID, embedding: list[float]) -> float | None:
-        del product_id, embedding  # no reference images in the eval
+    def reference_similarity(
+        self, product_id: UUID, embedding: list[float], *, model_version: str
+    ) -> float | None:
+        del product_id, embedding, model_version  # no reference images in the eval
         return None
 
 
@@ -232,6 +234,38 @@ class CiteTopResult:
         return ProviderResponse(json.dumps(answer), request.model, TokenUsage(), "end_turn")
 
 
+class LocalQueryEmbedder:
+    """The worker's text model, in this process (no Celery round trip)."""
+
+    def __init__(self, model: Any) -> None:
+        self._model = model
+
+    async def embed_query(self, text: str) -> list[float] | None:
+        vector: list[float] = self._model.embed_query(text)
+        return vector
+
+
+class LocalReranker:
+    def __init__(self, model: Any) -> None:
+        self._model = model
+
+    async def rerank(self, query: str, passages: list[str]) -> list[float] | None:
+        scores: list[float] = self._model.rerank(query, passages)
+        return scores
+
+
+def local_retrieval_models(settings: Any) -> tuple[Any, Any]:
+    """The text model and reranker when installed (the worker image, or `make install-ml`):
+    then retrieval runs as in production, with vectors and reranking; else keywords only."""
+    from medlens.workers.runtime import build_models
+
+    models = build_models(settings)
+    return (
+        LocalQueryEmbedder(models.text) if models.text else None,
+        LocalReranker(models.reranker) if models.reranker else None,
+    )
+
+
 @dataclass(frozen=True)
 class EvalActor:
     """A reader of every document (the eval is not about access control)."""
@@ -257,7 +291,10 @@ async def evaluate_assistant(live: bool) -> tuple[dict[str, Any], Decimal]:
     llm_settings = LLMSettings(enabled=True)
     provider: Any = AsyncAnthropicProvider(llm_settings) if live else CiteTopResult()
     gateway = AsyncLLMGateway(llm_settings, provider, ledger)
-    knowledge = KnowledgeService(sessions, KnowledgeSettings())
+    query_embedder, reranker = local_retrieval_models(settings)
+    knowledge = KnowledgeService(
+        sessions, KnowledgeSettings(), query_embedder=query_embedder, reranker=reranker
+    )
     assistant = AssistantService(knowledge, gateway, KnowledgeSettings())
     rows = list(csv.DictReader((SEED / "eval_questions.csv").open(encoding="utf-8")))
     titles = {
@@ -287,6 +324,9 @@ async def evaluate_assistant(live: bool) -> tuple[dict[str, Any], Decimal]:
     finally:
         await engine.dispose()
     report = {
+        "retrieval": "vectors + keywords + reranker"
+        if query_embedder and reranker
+        else "keywords and NAFDAC numbers only (no local models)",
         "questions": len(rows),
         "answered_from_the_expected_document": f"{answered_right}/{answerable}",
         "citation_correctness": round(cited_right / cited, 3) if cited else None,

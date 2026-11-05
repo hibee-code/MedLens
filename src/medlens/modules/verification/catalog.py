@@ -64,12 +64,14 @@ class Catalog(Protocol):
         """Distinct places where this batch was scanned since ``since``, other scans only."""
         ...
 
-    def published_alert(self, nafdac_number: str, batch_number: str | None) -> AlertFacts | None:
-        """The latest alert or recall naming this product, either for every batch or for
-        ``batch_number``; batch-specific ones first."""
+    def published_alerts(self, nafdac_number: str, batch_number: str | None) -> list[AlertFacts]:
+        """Official, active alerts and recalls naming this product, for every batch or for
+        ``batch_number``."""
         ...
 
-    def reference_similarity(self, product_id: UUID, embedding: list[float]) -> float | None:
-        """Best cosine similarity to the product's approved reference images, or None when it
-        has none."""
+    def reference_similarity(
+        self, product_id: UUID, embedding: list[float], *, model_version: str
+    ) -> float | None:
+        """Best cosine similarity to the product's approved reference images embedded by the
+        same model, or None when it has none (vectors of two models are never compared)."""
         ...

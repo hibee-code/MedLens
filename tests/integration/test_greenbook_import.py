@@ -18,7 +18,9 @@ pytestmark = pytest.mark.integration
 
 
 def unique_numbers(count: int) -> list[str]:
-    serials = random.sample(range(100000, 999999), count)
+    """OS entropy: the global random generator is reseeded per test (pytest-randomly), and
+    these numbers must differ across tests sharing the database."""
+    serials = random.SystemRandom().sample(range(100000, 999999), count)
     return [f"Z9-{serial}" for serial in serials]
 
 

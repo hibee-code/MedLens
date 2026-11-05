@@ -6,9 +6,12 @@ local one wins (a state agency before the national one). Scans without a state g
 regulator. Opening is idempotent: one case per scan.
 
 Reviewing (API, regulators): claim or assign, move through the workflow, and record the lab
-result. A lab result is also stored as a training label. With it, the reviewer may override the
-verdict shown for the scan, within what the outcome allows; the pipeline's verdict is kept and
-the override is audited. Nothing else changes a verdict (CLAUDE.md §5).
+result. A lab result is also stored as a training label.
+
+Overrides: once a case has a lab result, a regulator or platform admin may set the scan's final
+verdict, within what the outcome allows, with a required note. The pipeline's verdict never
+changes; every override and every reversal is audited. Nothing else changes a verdict
+(CLAUDE.md §5).
 """
 
 from datetime import UTC, datetime
@@ -20,7 +23,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Session
 
-from medlens.core.errors import Conflict, NotFound, ValidationFailed
+from medlens.core.errors import Conflict, Forbidden, NotFound, ValidationFailed
 from medlens.core.identifiers import NigerianState
 from medlens.core.pagination import PageParams
 from medlens.core.request_meta import RequestMeta
@@ -41,7 +44,7 @@ from medlens.modules.rbac.models import RolePermission
 from medlens.modules.rbac.permissions import Permission
 from medlens.modules.scans.models import Scan, Verdict
 from medlens.modules.scans.repository import id_window
-from medlens.modules.scans.service import override_verdict
+from medlens.modules.scans.service import Override, override_verdict, revert_override
 from medlens.modules.verification.service import needs_case
 from medlens.ports.storage import ObjectNotFoundError, StoragePort
 
@@ -204,14 +207,11 @@ class CaseService:
         meta: RequestMeta,
         *,
         override: Verdict | None = None,
+        override_note: str | None = None,
     ) -> tuple[Case, Scan]:
-        if override is not None and override not in _ALLOWED_OVERRIDES[outcome]:
-            raise ValidationFailed(
-                f"A {outcome.value} lab result cannot set the verdict to {override.value}.",
-                errors=[
-                    {"loc": ["body", "override_verdict"], "msg": "not allowed", "type": "value"}
-                ],
-            )
+        if override is not None:
+            _require_override_rights(actor)
+            _check_allowed(outcome, override, "override_verdict")
         async with UnitOfWork(self._sessions) as uow:
             session = uow.session
             case, scan = await _visible(session, actor, case_id, lock=True)
@@ -240,21 +240,50 @@ class CaseService:
             )
             await _audit(session, "case.lab_result", actor, case, meta, {"outcome": outcome.value})
             if override is not None:
-                shown = await override_verdict(session, scan, override, case_id=case.id)
-                await AuditService(session).record(
-                    "scan.verdict_overridden",
-                    actor_user_id=actor.user_id,
-                    actor_org_id=actor.organization.id if actor.organization else None,
-                    resource_type="scan",
-                    resource_id=scan.id,
-                    meta=meta,
-                    details={
-                        "case_id": str(case.id),
-                        "from": shown.value if shown else None,
-                        "to": override.value,
-                        "pipeline_verdict": scan.verdict.value if scan.verdict else None,
-                    },
-                )
+                await _override(session, actor, case, scan, override, override_note or "", meta)
+            await uow.commit()
+            return case, scan
+
+    async def override(
+        self, actor: Actor, case_id: UUID, verdict: Verdict, note: str, meta: RequestMeta
+    ) -> tuple[Case, Scan]:
+        """Set (or change) the scan's final verdict after the lab result, also on a resolved
+        case."""
+        _require_override_rights(actor)
+        async with UnitOfWork(self._sessions) as uow:
+            case, scan = await _visible(uow.session, actor, case_id, lock=True)
+            if not case.lab_result:
+                raise Conflict("Record the lab result before deciding the verdict.")
+            outcome = LabelOutcome(case.lab_result["outcome"])
+            _check_allowed(outcome, verdict, "verdict")
+            await _override(uow.session, actor, case, scan, verdict, note, meta)
+            await uow.commit()
+            return case, scan
+
+    async def revert_override(
+        self, actor: Actor, case_id: UUID, note: str, meta: RequestMeta
+    ) -> tuple[Case, Scan]:
+        """Back to the pipeline's verdict. The audit log keeps the reverted decision."""
+        _require_override_rights(actor)
+        async with UnitOfWork(self._sessions) as uow:
+            session = uow.session
+            case, scan = await _visible(session, actor, case_id, lock=True)
+            if scan.override_case_id != case.id:
+                raise Conflict("This case has not decided the scan's verdict.")
+            reverted = await revert_override(session, scan)
+            await _scan_audit(
+                session,
+                "scan.verdict_override_reverted",
+                actor,
+                scan,
+                meta,
+                {
+                    "case_id": str(case.id),
+                    "from": reverted.value if reverted else None,
+                    "to": scan.final_verdict.value if scan.final_verdict else None,
+                    "note": note,
+                },
+            )
             await uow.commit()
             return case, scan
 
@@ -273,6 +302,74 @@ class CaseService:
             await _audit(uow.session, "case.image_viewed", actor, case, meta)
             await uow.commit()
         return image
+
+
+def _require_override_rights(actor: Actor) -> None:
+    """Regulators who review cases, and platform admins."""
+    organization = actor.organization
+    regulator = organization is not None and organization.type is OrganizationType.REGULATOR
+    if not (actor.is_platform_admin or (regulator and actor.can(Permission.CASE_REVIEW))):
+        raise Forbidden("Only regulators and platform admins decide verdicts.")
+
+
+def _check_allowed(outcome: LabelOutcome, verdict: Verdict, field: str) -> None:
+    if verdict not in _ALLOWED_OVERRIDES[outcome]:
+        raise ValidationFailed(
+            f"A {outcome.value} lab result cannot set the verdict to {verdict.value}.",
+            errors=[{"loc": ["body", field], "msg": "not allowed", "type": "value"}],
+        )
+
+
+async def _override(
+    session: AsyncSession,
+    actor: Actor,
+    case: Case,
+    scan: Scan,
+    verdict: Verdict,
+    note: str,
+    meta: RequestMeta,
+) -> None:
+    lab_result = dict(case.lab_result or {})
+    before = await override_verdict(
+        session,
+        scan,
+        Override(verdict=verdict, case_id=case.id, lab_result=lab_result, note=note),
+        by=actor.user_id,
+    )
+    await _scan_audit(
+        session,
+        "scan.verdict_overridden",
+        actor,
+        scan,
+        meta,
+        {
+            "case_id": str(case.id),
+            "from": before.value if before else None,
+            "to": verdict.value,
+            "pipeline_verdict": scan.pipeline_verdict.value if scan.pipeline_verdict else None,
+            "lab_outcome": lab_result.get("outcome"),
+            "note": note,
+        },
+    )
+
+
+async def _scan_audit(
+    session: AsyncSession,
+    action: str,
+    actor: Actor,
+    scan: Scan,
+    meta: RequestMeta,
+    details: dict[str, object],
+) -> None:
+    await AuditService(session).record(
+        action,
+        actor_user_id=actor.user_id,
+        actor_org_id=actor.organization.id if actor.organization else None,
+        resource_type="scan",
+        resource_id=scan.id,
+        meta=meta,
+        details=details,
+    )
 
 
 def _with_scan() -> Select[Case, Scan]:

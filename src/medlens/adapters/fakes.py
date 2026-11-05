@@ -158,6 +158,31 @@ class FakeQueryEmbedder:
 
 
 @dataclass
+class FakeReranker:
+    """RerankPort and RerankingPort: the share of the query's words found in each passage."""
+
+    model_version: str = "fake-reranker-1"
+    calls: list[tuple[str, int]] = field(default_factory=list)
+    available: bool = True
+
+    def rerank(self, query: str, passages: Sequence[str]) -> list[float]:
+        self.calls.append((query, len(passages)))
+        words = set(query.casefold().split())
+        return [
+            round(len(words & set(passage.casefold().split())) / max(len(words), 1), 6)
+            for passage in passages
+        ]
+
+
+@dataclass
+class AsyncFakeReranker(FakeReranker):
+    async def rerank(self, query: str, passages: Sequence[str]) -> list[float] | None:  # type: ignore[override]
+        if not self.available:
+            return None
+        return FakeReranker.rerank(self, query, passages)
+
+
+@dataclass
 class FakeTextEmbedder:
     """Deterministic text vectors: texts sharing words get similar vectors."""
 
@@ -169,6 +194,9 @@ class FakeTextEmbedder:
 
     def embed_query(self, text: str) -> list[float]:
         return self._vector(text)
+
+    def probe_dimension(self) -> int:
+        return self.dimension
 
     def _vector(self, text: str) -> list[float]:
         vector = [0.0] * self.dimension
@@ -189,6 +217,9 @@ class FakeEmbedder:
         if found is not None:
             return found
         return [1.0] + [0.0] * (self.dimension - 1)
+
+    def probe_dimension(self) -> int:
+        return self.dimension
 
 
 @dataclass

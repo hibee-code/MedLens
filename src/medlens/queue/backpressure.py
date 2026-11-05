@@ -11,6 +11,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import structlog
+from prometheus_client import Gauge
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
@@ -19,6 +20,12 @@ from medlens.core.errors import DependencyUnavailable
 log = structlog.stdlib.get_logger(__name__)
 
 SCANS_QUEUE = "scans.pipeline"
+QUEUES = ("scans.pipeline", "ml.ocr", "ml.embed", "llm", "events", "maintenance")
+QUEUE_DEPTH = Gauge(
+    "medlens_queue_depth",
+    "Messages waiting in a Celery queue, read by the API at every dependency probe.",
+    ["queue"],
+)
 PRIORITY_STEPS = tuple(range(10))
 PRIORITY_SEP = ":"
 BASE_WAIT_SECONDS = 10
@@ -39,6 +46,7 @@ class QueueDepth:
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._broker = broker
+        self._queue = queue
         self._keys = queue_keys(queue)
         self._cache_seconds = cache_seconds
         self._clock = clock
@@ -55,6 +63,7 @@ class QueueDepth:
                     pipe.llen(key)
                 lengths = await pipe.execute()
             self._value = int(sum(lengths))
+            QUEUE_DEPTH.labels(queue=self._queue).set(self._value)
         except RedisError as exc:
             log.warning("queue.depth_unavailable", error=type(exc).__name__)
             self._value = None

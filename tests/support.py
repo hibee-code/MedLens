@@ -29,6 +29,20 @@ def secret_groups() -> dict[str, dict[str, Any]]:
     }
 
 
+def reset_celery_clients() -> None:
+    """Forget the Celery app's cached broker pools and result backend, so the next use connects
+    with the current configuration. Fixtures that change broker_url or result_backend call it
+    before and after, or later tests reuse clients bound to the old (or closed) connection."""
+    from kombu import pools
+
+    from medlens.queue.celery_app import celery_app
+
+    pools.reset()  # closes and forgets every pooled connection and producer, process-wide
+    celery_app._pool = None
+    celery_app.amqp._producer_pool = None
+    vars(celery_app._local).pop("backend", None)
+
+
 def settings_groups(**groups: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """``groups`` merged field by field over the generated secrets, in the test environment
     unless ``app`` says otherwise."""

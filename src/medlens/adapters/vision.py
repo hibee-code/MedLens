@@ -11,7 +11,7 @@ import imagehash
 import numpy as np
 import pytesseract
 import zxingcpp
-from PIL import Image
+from PIL import Image, ImageOps
 
 from medlens.ports.barcode import BarcodeRead
 from medlens.ports.image_analysis import ImageAssessment
@@ -71,28 +71,41 @@ def tesseract_available() -> bool:
 class TesseractOcr:
     """Printed text, one line per printed line (the field extractors match within lines);
     confidence is the mean word confidence. Sparse-text mode suits packs, whose text is
-    scattered rather than set in paragraphs."""
+    scattered rather than set in paragraphs. Packs often print names light on dark, which
+    Tesseract misses, so the inverted image is read too and new lines are added."""
 
     def __init__(self, *, languages: str = "eng", timeout_seconds: float = 10.0) -> None:
         self._languages = languages
         self._timeout = timeout_seconds
 
     def read(self, image: bytes) -> OcrResult:
+        grey = _decode(image).convert("L")
+        lines: dict[str, None] = {}
+        confidences: list[float] = []
+        for picture in (grey, ImageOps.invert(grey)):
+            for line, line_confidences in self._lines(picture):
+                if line not in lines:
+                    lines[line] = None
+                    confidences.extend(line_confidences)
+        text = "\n".join(lines)
+        return OcrResult(text, round(fmean(confidences) / 100, 3) if confidences else 0.0)
+
+    def _lines(self, picture: Image.Image) -> list[tuple[str, list[float]]]:
         data = pytesseract.image_to_data(
-            _decode(image).convert("L"),
+            picture,
             lang=self._languages,
             config="--psm 11",
             output_type=pytesseract.Output.DICT,
             timeout=self._timeout,
         )
-        lines: defaultdict[tuple[int, int, int], list[str]] = defaultdict(list)
-        confidences: list[float] = []
+        words: defaultdict[tuple[int, int, int], list[tuple[str, float]]] = defaultdict(list)
         for index, word in enumerate(data["text"]):
             confidence = float(data["conf"][index])
             if not word.strip() or confidence < 0:
                 continue
             key = (data["block_num"][index], data["par_num"][index], data["line_num"][index])
-            lines[key].append(word.strip())
-            confidences.append(confidence)
-        text = "\n".join(" ".join(words) for _, words in sorted(lines.items()))
-        return OcrResult(text, round(fmean(confidences) / 100, 3) if confidences else 0.0)
+            words[key].append((word.strip(), confidence))
+        return [
+            (" ".join(word for word, _ in line), [conf for _, conf in line])
+            for _, line in sorted(words.items())
+        ]

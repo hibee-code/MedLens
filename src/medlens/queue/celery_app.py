@@ -31,7 +31,6 @@ from medlens.core.config import Settings, get_settings
 from medlens.queue.backpressure import PRIORITY_SEP, PRIORITY_STEPS
 from medlens.queue.beat_schedule import beat_schedule
 
-QUEUES = ("scans.pipeline", "ml.ocr", "ml.embed", "llm", "events", "maintenance")
 TASK_ROUTES = {
     "medlens.scans.*": {"queue": "scans.pipeline"},
     "medlens.ocr.*": {"queue": "ml.ocr"},
@@ -63,6 +62,7 @@ def build_celery_config(settings: Settings) -> dict[str, Any]:
         "task_acks_late": True,
         "task_reject_on_worker_lost": True,
         "worker_prefetch_multiplier": 1,  # long CPU-bound tasks: never hoard messages
+        "worker_concurrency": queue.worker_concurrency,
         "task_soft_time_limit": queue.task_soft_time_limit_seconds,
         "task_time_limit": queue.task_time_limit_seconds,
         "task_default_queue": "events",
@@ -83,7 +83,7 @@ def build_celery_config(settings: Settings) -> dict[str, Any]:
 
 
 def _configure_worker_process(**_: Any) -> None:
-    configure_process(get_settings())
+    configure_process(get_settings(), component="worker")
 
 
 celery_app = Celery("medlens")

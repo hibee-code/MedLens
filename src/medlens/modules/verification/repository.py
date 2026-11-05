@@ -7,10 +7,16 @@ from uuid import UUID
 from sqlalchemy import ColumnElement, distinct, func, select
 from sqlalchemy.orm import Session
 
-from medlens.modules.knowledge.models import PublishedAlert
+from medlens.modules.knowledge.models import (
+    ALERT_KINDS,
+    DocumentStatus,
+    KnowledgeDocument,
+    PublishedAlert,
+)
 from medlens.modules.products.models import Batch, Product, ReferenceImage, ReviewStatus
 from medlens.modules.scans.models import Scan, ScanStatus
 from medlens.modules.verification.catalog import AlertFacts, BatchFacts, BatchSpread, ProductFacts
+from medlens.modules.verification.product_cache import ProductCache
 
 CANDIDATES = 5
 # pg_trgm thresholds for the two fuzzy lookups.
@@ -37,14 +43,22 @@ class EarlierScan:
 
 
 class SqlCatalog:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, products: ProductCache | None = None) -> None:
         self._session = session
+        self._products = products
 
     def product_by_nafdac(self, nafdac_number: str) -> ProductFacts | None:
+        if self._products is not None:
+            hit, cached = self._products.get(nafdac_number)
+            if hit:
+                return cached
         product = self._session.scalar(
             select(Product).where(Product.nafdac_number == nafdac_number)
         )
-        return _facts(product) if product else None
+        facts = _facts(product) if product else None
+        if self._products is not None:
+            self._products.put(nafdac_number, facts)
+        return facts
 
     def similar_nafdac(self, nafdac_number: str) -> list[tuple[ProductFacts, float]]:
         score = func.similarity(Product.nafdac_number, nafdac_number)
@@ -107,30 +121,34 @@ class SqlCatalog:
             states=frozenset(str(state) for state in (states or []) if state is not None),
         )
 
-    def published_alert(self, nafdac_number: str, batch_number: str | None) -> AlertFacts | None:
+    def published_alerts(self, nafdac_number: str, batch_number: str | None) -> list[AlertFacts]:
         batches = ["", batch_number] if batch_number else [""]
-        alert = self._session.scalar(
+        rows = self._session.execute(
             select(PublishedAlert)
+            .join(KnowledgeDocument, KnowledgeDocument.id == PublishedAlert.document_id)
             .where(
                 PublishedAlert.nafdac_number == nafdac_number,
                 PublishedAlert.batch_number.in_(batches),
+                KnowledgeDocument.official.is_(True),
+                KnowledgeDocument.active.is_(True),
+                KnowledgeDocument.status == DocumentStatus.INDEXED,
+                KnowledgeDocument.kind.in_(ALERT_KINDS),
             )
-            .order_by(
-                (PublishedAlert.batch_number == "").asc(),
-                PublishedAlert.published_on.desc().nulls_last(),
+            .order_by(PublishedAlert.published_on.desc().nulls_last())
+        ).scalars()
+        return [
+            AlertFacts(
+                document_id=alert.document_id,
+                kind=alert.kind.value,
+                batch_specific=alert.batch_number != "",
+                published_on=alert.published_on,
             )
-            .limit(1)
-        )
-        if alert is None:
-            return None
-        return AlertFacts(
-            document_id=alert.document_id,
-            kind=alert.kind.value,
-            batch_specific=alert.batch_number != "",
-            published_on=alert.published_on,
-        )
+            for alert in rows
+        ]
 
-    def reference_similarity(self, product_id: UUID, embedding: list[float]) -> float | None:
+    def reference_similarity(
+        self, product_id: UUID, embedding: list[float], *, model_version: str
+    ) -> float | None:
         distance = ReferenceImage.embedding.cosine_distance(embedding)
         best = self._session.scalar(
             select(func.min(distance)).where(
@@ -138,6 +156,7 @@ class SqlCatalog:
                 ReferenceImage.status == ReviewStatus.APPROVED,
                 ReferenceImage.deleted_at.is_(None),
                 ReferenceImage.embedding.is_not(None),
+                ReferenceImage.embedding_model_version == model_version,
             )
         )
         return None if best is None else 1.0 - float(best)

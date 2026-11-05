@@ -24,7 +24,9 @@ class SignalName(StrEnum):
     BATCH_SPREAD = "batch_spread"
     OUTSIDE_DISTRIBUTION = "outside_distribution"
     VISUAL_MISMATCH = "visual_mismatch"
-    COUNTERFEIT_ALERT = "counterfeit_alert"  # 1: a published alert or recall names the pack
+    COUNTERFEIT_ALERT = "counterfeit_alert"  # 1: an official alert names this product and batch
+    PRODUCT_ALERT = "product_alert"  # 1: an official alert names the product, no batch
+    RECALLED_BATCH = "recalled_batch"  # 1: an official recall covers this batch
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,7 +78,7 @@ class RiskScorer(Protocol):
 
 
 # Weight of each signal in the risk score; values are 0..1, the weighted sum is clipped to 1.
-WEIGHTS_V1: dict[SignalName, float] = {
+WEIGHTS: dict[SignalName, float] = {
     SignalName.REGISTRATION: 0.35,
     SignalName.NAME_MISMATCH: 0.30,
     SignalName.BATCH_NOT_DECLARED: 0.30,
@@ -85,6 +87,8 @@ WEIGHTS_V1: dict[SignalName, float] = {
     SignalName.OUTSIDE_DISTRIBUTION: 0.15,
     SignalName.VISUAL_MISMATCH: 0.35,
     SignalName.COUNTERFEIT_ALERT: 0.60,
+    SignalName.PRODUCT_ALERT: 0.35,
+    SignalName.RECALLED_BATCH: 0.30,
 }
 # A signal is reported as a reason once its value reaches this level.
 REASON_LEVEL = 0.5
@@ -95,6 +99,7 @@ _SIGNAL_REASONS: dict[SignalName, ReasonCode] = {
     SignalName.BATCH_SPREAD: ReasonCode.BATCH_SEEN_WIDELY,
     SignalName.OUTSIDE_DISTRIBUTION: ReasonCode.OUTSIDE_DISTRIBUTION,
     SignalName.VISUAL_MISMATCH: ReasonCode.VISUAL_MISMATCH,
+    SignalName.PRODUCT_ALERT: ReasonCode.ALERT_FOR_THIS_PRODUCT,
 }
 _REGISTRATION_REASONS = {
     RegistrationStatus.EXPIRED: ReasonCode.REGISTRATION_EXPIRED,
@@ -104,7 +109,7 @@ _REGISTRATION_REASONS = {
 
 
 class WeightedRuleScorer:
-    version = "weighted-rules-v2"  # v2: published alerts are a hard rule
+    version = "weighted-rules-v2"  # v2: official alerts and recalls (docs/scoring.md)
 
     def __init__(
         self,
@@ -139,14 +144,17 @@ class WeightedRuleScorer:
         if facts.pack_expired:
             reasons.append(ReasonCode.PACK_EXPIRED)
             floor = max(floor, self._suspicious)
-        alert = facts.signals.get(SignalName.COUNTERFEIT_ALERT, UNAVAILABLE)
-        if alert.value is not None and alert.value >= REASON_LEVEL:
+        signals = facts.signals
+        if _on(signals, SignalName.COUNTERFEIT_ALERT):
             reasons.append(ReasonCode.PUBLISHED_ALERT)
             floor = max(floor, self._high)
+        recalled = _on(signals, SignalName.RECALLED_BATCH)
+        if recalled:
+            reasons.append(ReasonCode.RECALLED_BATCH)
+            floor = max(floor, self._suspicious)
 
-        signals = facts.signals
         weighted = sum(
-            WEIGHTS_V1[name] * (signal.value or 0.0)
+            WEIGHTS[name] * (signal.value or 0.0)
             for name, signal in signals.items()
             if signal.available
         )
@@ -154,6 +162,11 @@ class WeightedRuleScorer:
             signal = signals.get(name, UNAVAILABLE)
             if signal.value is not None and signal.value >= REASON_LEVEL:
                 reasons.append(reason)
+        # An alert for the product (not this batch) alone raises risk; with any other negative
+        # finding it makes the pack high priority, which opens a case.
+        others = [code for code in reasons if code is not ReasonCode.ALERT_FOR_THIS_PRODUCT]
+        if _on(signals, SignalName.PRODUCT_ALERT) and others:
+            floor = max(floor, self._high)
         risk = round(min(1.0, max(weighted, floor)), 4)
         verdict = Verdict.SUSPICIOUS if risk >= self._suspicious else Verdict.LIKELY_GENUINE
         return self._result(
@@ -163,6 +176,7 @@ class WeightedRuleScorer:
             tuple(reasons),
             high_priority=risk >= self._high,
             pack_expired=facts.pack_expired,
+            recalled=recalled,
         )
 
     def _unidentified(self, facts: ScoreInput) -> Score:
@@ -184,10 +198,8 @@ class WeightedRuleScorer:
     def _confidence(self, facts: ScoreInput) -> float:
         """Extraction confidence, discounted when signals were unavailable:
         confidence = extraction * (0.4 + 0.6 * coverage), coverage = available weight / total."""
-        total = sum(WEIGHTS_V1.values())
-        available = sum(
-            WEIGHTS_V1[name] for name, signal in facts.signals.items() if signal.available
-        )
+        total = sum(WEIGHTS.values())
+        available = sum(WEIGHTS[name] for name, signal in facts.signals.items() if signal.available)
         coverage = available / total
         return max(0.0, min(1.0, facts.extraction_confidence * (0.4 + 0.6 * coverage)))
 
@@ -200,6 +212,7 @@ class WeightedRuleScorer:
         *,
         high_priority: bool,
         pack_expired: bool = False,
+        recalled: bool = False,
     ) -> Score:
         return Score(
             verdict=verdict,
@@ -207,16 +220,28 @@ class WeightedRuleScorer:
             confidence=confidence,
             high_priority=high_priority,
             reason_codes=reasons,
-            advice_codes=_advice(verdict, high_priority=high_priority, pack_expired=pack_expired),
+            advice_codes=_advice(
+                verdict, high_priority=high_priority, pack_expired=pack_expired, recalled=recalled
+            ),
             scorer_version=self.version,
         )
 
 
-def _advice(verdict: Verdict, *, high_priority: bool, pack_expired: bool) -> tuple[AdviceCode, ...]:
+def _on(signals: dict[SignalName, Signal], name: SignalName) -> bool:
+    value = signals.get(name, UNAVAILABLE).value
+    return value is not None and value >= REASON_LEVEL
+
+
+def _advice(
+    verdict: Verdict, *, high_priority: bool, pack_expired: bool, recalled: bool = False
+) -> tuple[AdviceCode, ...]:
     if verdict is Verdict.INCONCLUSIVE:
         return (AdviceCode.RETAKE_PHOTO, AdviceCode.ASK_A_PHARMACIST)
     if verdict is Verdict.UNREGISTERED:
         return (AdviceCode.DO_NOT_USE, AdviceCode.KEEP_THE_PACK, AdviceCode.REPORT_TO_NAFDAC)
+    if verdict is Verdict.SUSPICIOUS and recalled and not high_priority:
+        # A genuine batch recalled for quality: return it, no counterfeit evidence to keep.
+        return (AdviceCode.DO_NOT_USE_RETURN, AdviceCode.ASK_A_PHARMACIST)
     if verdict is Verdict.SUSPICIOUS:
         advice = [AdviceCode.DO_NOT_USE] if high_priority or pack_expired else []
         advice.append(AdviceCode.ASK_A_PHARMACIST)

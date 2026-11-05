@@ -16,12 +16,18 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 import structlog
+from prometheus_client import Counter
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from medlens.db.models import OutboxEvent
 
 log = structlog.stdlib.get_logger(__name__)
+DEAD_LETTERED = Counter(
+    "medlens_outbox_dead_lettered",
+    "Outbox events given up on after too many attempts.",
+    ["event_type"],
+)
 
 BACKOFF_BASE_SECONDS = 2
 BACKOFF_MAX_SECONDS = 600
@@ -73,6 +79,7 @@ def relay_once(
             if event.attempts >= max_attempts:
                 event.dead_lettered_at = now
                 dead += 1
+                DEAD_LETTERED.labels(event_type=event.event_type).inc()
                 log.error(
                     "outbox.dead_lettered",
                     event_id=str(event.id),

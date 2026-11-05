@@ -6,13 +6,14 @@ question's embedding ("query: " prefix, computed by a worker), Postgres full-tex
 (websearch_to_tsquery), and exact NAFDAC numbers named in the question. Their rankings are
 fused with Reciprocal Rank Fusion (score = sum of 1 / (k + rank)). A result counts as evidence
 only if it names the NAFDAC number asked about, matches the words of the question, or is
-semantically close (cosine at least MEDLENS_KNOWLEDGE__MIN_SIMILARITY); the best ``top_k`` are
-kept. Without the embedding (worker busy or no model) search runs on the other two and says so.
-No model is called here.
+semantically close (cosine at least MEDLENS_KNOWLEDGE__MIN_SIMILARITY). The best
+``rerank_candidates`` are then re-ordered by a cross-encoder (in a worker) and the best ``top_k``
+kept. Without the embedding or the reranker (worker busy or no model) search runs on what it has
+and says so. No generative model is called here.
 """
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
 from uuid import UUID
 
@@ -38,6 +39,7 @@ from medlens.modules.organizations.models import OrganizationType
 from medlens.modules.rbac.access import Actor
 from medlens.modules.verification.extraction import find_nafdac_numbers
 from medlens.ports.embedding import QueryEmbeddingPort
+from medlens.ports.rerank import RerankingPort
 from medlens.ports.storage import StoragePort
 from medlens.queue import outbox
 
@@ -53,6 +55,8 @@ class NewDocument:
     source: str | None = None
     source_url: str | None = None
     published_on: date | None = None
+    official: bool = False
+    active: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +65,7 @@ class SearchHit:
     score: float  # fused (RRF)
     matched_by: tuple[str, ...]  # vector, keyword, nafdac_number
     similarity: float | None
+    rerank_score: float | None = None  # the cross-encoder's relevance, 0..1
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +73,7 @@ class SearchResult:
     hits: list[SearchHit]
     vector_search: bool  # False: the question's embedding was unavailable
     nafdac_numbers: list[str] = field(default_factory=list)
+    reranked: bool = False  # the cross-encoder ordered the results
 
 
 def can_read_regulator_only(actor: Actor) -> bool:
@@ -94,11 +100,13 @@ class KnowledgeService:
         *,
         storage: StoragePort | None = None,
         query_embedder: QueryEmbeddingPort | None = None,
+        reranker: RerankingPort | None = None,
     ) -> None:
         self._sessions = sessions
         self._settings = settings
         self._storage = storage
         self._query_embedder = query_embedder
+        self._reranker = reranker if settings.rerank else None
 
     # ------------------------------------------------------------------ documents
     async def upload(
@@ -121,6 +129,8 @@ class KnowledgeService:
                 source=new.source,
                 source_url=new.source_url,
                 published_on=new.published_on,
+                official=new.official,
+                active=new.active,
                 media_type=upload.media_type,
                 s3_key=key,
                 size_bytes=len(upload.data),
@@ -140,9 +150,50 @@ class KnowledgeService:
                 resource_type="knowledge_document",
                 resource_id=document_id,
                 meta=meta,
-                details={"kind": new.kind.value, "sha256": hashlib.sha256(upload.data).hexdigest()},
+                details={
+                    "kind": new.kind.value,
+                    "official": new.official,
+                    "active": new.active,
+                    "sha256": hashlib.sha256(upload.data).hexdigest(),
+                },
             )
             await session.flush()
+            await uow.commit()
+        return document
+
+    async def update_flags(
+        self,
+        actor: Actor,
+        document_id: UUID,
+        *,
+        official: bool | None,
+        active: bool | None,
+        meta: RequestMeta,
+    ) -> KnowledgeDocument:
+        """Vouch for a document's source, or withdraw it. For alerts and recalls this decides
+        whether scans of the products they name are flagged, so every change is audited."""
+        async with UnitOfWork(self._sessions) as uow:
+            document = await KnowledgeRepository(uow.session).document(document_id)
+            if document is None:
+                raise NotFound("Document not found.")
+            before = {"official": document.official, "active": document.active}
+            if official is not None:
+                document.official = official
+            if active is not None:
+                document.active = active
+            await AuditService(uow.session).record(
+                "knowledge.document_updated",
+                actor_user_id=actor.user_id,
+                actor_org_id=actor.organization.id if actor.organization else None,
+                resource_type="knowledge_document",
+                resource_id=document.id,
+                meta=meta,
+                details={
+                    "before": before,
+                    "after": {"official": document.official, "active": document.active},
+                },
+            )
+            await uow.session.flush()
             await uow.commit()
         return document
 
@@ -188,11 +239,12 @@ class KnowledgeService:
                 for hit in hits
                 if name != "vector" or hit.score >= settings.min_similarity
             }
+            keep = settings.rerank_candidates if self._reranker else settings.top_k
             fused = [
                 (chunk_id, score)
                 for chunk_id, score in fuse(rankings, settings.rrf_k)
                 if chunk_id in evidence
-            ][: settings.top_k]
+            ][:keep]
             details = await repository.details([chunk_id for chunk_id, _ in fused])
         hits = [
             SearchHit(
@@ -208,13 +260,28 @@ class KnowledgeService:
             for chunk_id, score in fused
             if chunk_id in details
         ]
+        hits, reranked = await self._rerank(question, hits)
         log.info(
             "knowledge.searched",
             results=len(hits),
             vector_search=embedding is not None,
+            reranked=reranked,
             nafdac_numbers=len(numbers),
         )
-        return SearchResult(hits, embedding is not None, numbers)
+        return SearchResult(hits[: settings.top_k], embedding is not None, numbers, reranked)
+
+    async def _rerank(self, question: str, hits: list[SearchHit]) -> tuple[list[SearchHit], bool]:
+        """The cross-encoder's order (best first), or the fused order if it is unavailable."""
+        if self._reranker is None or len(hits) < 2:
+            return hits, False
+        scores = await self._reranker.rerank(question, [hit.chunk.text for hit in hits])
+        if scores is None:
+            return hits, False
+        ranked = sorted(
+            (replace(hit, rerank_score=score) for hit, score in zip(hits, scores, strict=True)),
+            key=lambda hit: -(hit.rerank_score or 0.0),
+        )
+        return ranked, True
 
 
 def _professional() -> ColumnElement[bool]:

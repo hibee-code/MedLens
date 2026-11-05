@@ -170,3 +170,32 @@ def test_sync_session_scope_commits_and_rolls_back(
 
     assert kept in names
     assert failed not in names
+
+
+def test_the_seed_stores_approved_synthetic_reference_images(migrated_settings: Settings) -> None:
+    from medlens.adapters.fakes import InMemoryStorage, SyncView
+    from medlens.modules.products.models import ReferenceImage, ReviewStatus
+
+    storage = InMemoryStorage()
+    engine = create_sync_engine(migrated_settings.database, application_name="medlens-tests")
+    factory = create_sync_session_factory(engine)
+    try:
+        with factory() as session, session.begin():
+            run_seed(session, ROOT / "seed", storage=SyncView(storage))
+            run_seed(session, ROOT / "seed", storage=SyncView(storage))  # idempotent
+            images = [
+                (image.status, image.embedding)
+                for image in session.scalars(
+                    select(ReferenceImage).where(
+                        ReferenceImage.s3_key.like("reference-images/seed/%")
+                    )
+                )
+            ]
+            session.rollback()  # leave the shared database as it was
+    finally:
+        engine.dispose()
+
+    assert len(images) == 5
+    assert all(status is ReviewStatus.APPROVED for status, _ in images)
+    assert all(embedding is None for _, embedding in images)  # the backfill embeds them
+    assert len(storage.objects) == 5

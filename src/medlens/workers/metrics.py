@@ -4,12 +4,11 @@ Prefork children each count in their own memory, so in the worker image
 PROMETHEUS_MULTIPROC_DIR points prometheus_client at a shared directory: children write their
 samples there, and the main process serves the sum on
 MEDLENS_OBSERVABILITY__WORKER_METRICS_PORT (0: off). Without the variable (development,
-``--pool=solo``) the process's own registry is served.
+``--pool=solo``) the process's own registry is served. The directory must exist, empty, before
+anything imports prometheus_client: the worker image's command recreates it.
 """
 
 import os
-import shutil
-from pathlib import Path
 from typing import Any
 
 import structlog
@@ -30,20 +29,11 @@ def registry() -> CollectorRegistry:
     return collected
 
 
-def reset_multiproc_dir() -> None:
-    """Samples from a previous run would be summed into this one."""
-    directory = os.environ.get(MULTIPROC_ENV)
-    if directory:
-        shutil.rmtree(directory, ignore_errors=True)
-        Path(directory).mkdir(parents=True, exist_ok=True)
-
-
 def start_metrics_server(**_: Any) -> None:
     """``worker_init`` (main process, before the pool forks)."""
     port = get_settings().observability.worker_metrics_port
     if not port:
         return
-    reset_multiproc_dir()
     start_http_server(port, registry=registry())
     log.info("worker.metrics_serving", port=port)
 

@@ -118,7 +118,7 @@ async def test_cases_are_scoped_by_jurisdiction(api: Api) -> None:
     )
 
     assert oyo_view.status_code == 200
-    assert oyo_view.json()["scan"]["verdict"] == "UNREGISTERED"
+    assert oyo_view.json()["scan"]["final_verdict"] == "UNREGISTERED"
     assert ekiti_view.status_code == 404
     assert str(case.id) not in {item["id"] for item in ekiti_list.json()["items"]}
     assert consumer.status_code == 403

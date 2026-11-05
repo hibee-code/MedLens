@@ -122,7 +122,7 @@ async def test_each_fixture_pack_gets_its_expected_verdict(api: Api) -> None:
             await api.client.get(f"/api/v1/scans/{scan_id}", headers=staff)
         ).json()
 
-    verdicts = {name: result["verdict"] for name, result in results.items()}
+    verdicts = {name: result["final_verdict"] for name, result in results.items()}
     assert verdicts == {pack["file"]: pack["expected_verdict"] for pack in packs}
     for pack in packs:
         for reason in filter(None, pack["expected_reasons"].split(";")):

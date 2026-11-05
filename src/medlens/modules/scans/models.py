@@ -53,7 +53,17 @@ class Scan(Entity):
         CheckConstraint("risk_score IS NULL OR risk_score BETWEEN 0 AND 1", name="risk_score"),
         CheckConstraint("confidence IS NULL OR confidence BETWEEN 0 AND 1", name="confidence"),
         CheckConstraint("processing_ms IS NULL OR processing_ms >= 0", name="processing_ms"),
-        Index("ix_scans_verdict_created_at", "verdict", "created_at"),
+        Index("ix_scans_final_verdict_created_at", "final_verdict", "created_at"),
+        # A case decision must say why; without one the final verdict is the pipeline's.
+        CheckConstraint(
+            "overridden_at IS NULL OR (override_case_id IS NOT NULL "
+            "AND override_note IS NOT NULL AND override_lab_result IS NOT NULL)",
+            name="override_complete",
+        ),
+        CheckConstraint(
+            "overridden_at IS NOT NULL OR final_verdict IS NOT DISTINCT FROM pipeline_verdict",
+            name="final_is_pipeline_unless_overridden",
+        ),
         Index("ix_scans_location_coarse", "location_coarse", postgresql_using="gist"),
         Index(
             "ix_scans_matched_product_id_matched_batch_id", "matched_product_id", "matched_batch_id"
@@ -96,12 +106,22 @@ class Scan(Entity):
         ForeignKey("batches.id", ondelete="SET NULL")
     )
     signals: Mapped[dict[str, Any] | None]
-    # The scorer's verdict: never changed afterwards.
-    verdict: Mapped[Verdict | None] = mapped_column(str_enum(Verdict, "verdict"))
-    # A confirmed case decision supersedes it (audited); the scorer's verdict stays above.
-    verdict_override: Mapped[Verdict | None] = mapped_column(str_enum(Verdict, "verdict_override"))
-    override_case_id: Mapped[UUID | None]
+    # The scorer's verdict, set once: a trigger rejects any change (migration 0014).
+    pipeline_verdict: Mapped[Verdict | None] = mapped_column(str_enum(Verdict, "pipeline_verdict"))
+    # What clients see: the pipeline's verdict, or a regulator's case decision (audited,
+    # reversible). Hotspots and statistics count this one.
+    final_verdict: Mapped[Verdict | None] = mapped_column(str_enum(Verdict, "final_verdict"))
+    overridden_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     overridden_at: Mapped[datetime | None]
+    override_case_id: Mapped[UUID | None]
+    override_lab_result: Mapped[dict[str, Any] | None]  # the case's lab result when decided
+    override_note: Mapped[str | None] = mapped_column(Text)
+
+    @property
+    def reviewed(self) -> bool:
+        """A regulator's case decision set the final verdict."""
+        return self.overridden_at is not None
+
     llm_used: Mapped[bool] = mapped_column(default=False, server_default=false())
     # Stable codes (verification/codes.py); clients translate them.
     reason_codes: Mapped[list[str]] = mapped_column(

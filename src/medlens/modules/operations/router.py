@@ -23,7 +23,9 @@ Admin = Annotated[Actor, Depends(require_permissions(Permission.PLATFORM_ADMIN, 
 
 
 def _send(task_name: str, args: list[Any], kwargs: dict[str, Any]) -> None:
-    celery_app.send_task(task_name, args=args, kwargs=kwargs, headers=context_headers())
+    celery_app.send_task(
+        task_name, args=args, kwargs=kwargs, headers=context_headers(), ignore_result=True
+    )
 
 
 def get_failed_task_service(

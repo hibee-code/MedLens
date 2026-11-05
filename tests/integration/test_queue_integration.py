@@ -12,9 +12,15 @@ from uuid import UUID, uuid4
 import pytest
 from redis import Redis
 from redis.asyncio import Redis as AsyncRedis
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 
-from medlens.adapters.fakes import FakeEmbedder, FakeImageAnalysis, FakeTextEmbedder, SyncView
+from medlens.adapters.fakes import (
+    FakeEmbedder,
+    FakeImageAnalysis,
+    FakeReranker,
+    FakeTextEmbedder,
+    SyncView,
+)
 from medlens.core.config import Settings
 from medlens.db.models import FailedTask, OutboxEvent
 from medlens.modules.rbac.models import RoleName
@@ -26,6 +32,7 @@ from medlens.queue.relay import relay_once
 from medlens.workers import failures, tasks
 from medlens.workers.runtime import WorkerRuntime, set_runtime
 from tests.integration.api_support import Api, photo
+from tests.support import reset_celery_clients
 
 pytestmark = pytest.mark.integration
 
@@ -74,6 +81,19 @@ async def test_two_relays_publish_each_event_exactly_once(api: Api) -> None:
         ).all()
     assert {event_id for event_id in ours if dispatched[event_id] != 1} == set()
     assert unpublished == []
+
+
+@pytest.fixture(autouse=True)
+def empty_outbox(api: Api) -> None:
+    """Earlier tests (in any order) leave unrelayed events in the shared database. The relay
+    takes the oldest first, so a test's own events could miss its relay runs: mark the
+    leftovers published before each test here."""
+    with api.sync_sessions() as session, session.begin():
+        session.execute(
+            update(OutboxEvent)
+            .where(OutboxEvent.published_at.is_(None), OutboxEvent.dead_lettered_at.is_(None))
+            .values(published_at=func.now())
+        )
 
 
 async def test_failing_events_back_off_then_dead_letter(api: Api) -> None:
@@ -198,6 +218,9 @@ def broker(app_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     config = build_celery_config(app_settings)
     keys = ("broker_url", "result_backend", "task_always_eager")
     previous = {key: celery_app.conf.get(key) for key in keys}
+    reset_celery_clients()
+    with Redis.from_url(config["broker_url"]) as broker_redis:
+        broker_redis.flushdb()  # messages left by earlier tests would be consumed first
     celery_app.conf.update(
         broker_url=config["broker_url"],
         result_backend=config["result_backend"],
@@ -205,7 +228,7 @@ def broker(app_settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     )
     yield
     celery_app.conf.update(previous)
-    celery_app.pool.force_close_all()
+    reset_celery_clients()
 
 
 class EventCollector(logging.Handler):
@@ -468,11 +491,19 @@ async def test_knowledge_tasks(api: Api, worker_runtime: WorkerRuntime) -> None:
         for item in stored:
             item.embedding_model_version = "an-older-model"  # a model change
     backfilled = tasks.backfill_knowledge_embeddings.run()
+    worker_runtime.reranker = FakeReranker()
+    scores = tasks.rerank.run("recall batch", ["a recall notice", "storage advice"])
     worker_runtime.text_embedder = None
-    without_model = (tasks.embed_query.run("q"), tasks.backfill_knowledge_embeddings.run())
+    worker_runtime.reranker = None
+    without_model = (
+        tasks.embed_query.run("q"),
+        tasks.backfill_knowledge_embeddings.run(),
+        tasks.rerank.run("q", ["p"]),
+    )
 
     assert status == "indexed"
     assert vector is not None
     assert len(vector) == worker_runtime.settings.embeddings.text_dimension
     assert backfilled >= len(stored) >= 1
-    assert without_model == (None, 0)
+    assert scores[0] > scores[1]
+    assert without_model == (None, 0, None)

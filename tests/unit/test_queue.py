@@ -17,11 +17,18 @@ from medlens.db.models import OutboxEvent
 from medlens.modules.scans.service import scan_done_channel
 from medlens.ports.storage import StorageUnavailableError
 from medlens.queue import outbox
-from medlens.queue.backpressure import BASE_WAIT_SECONDS, Backpressure, QueueDepth, queue_keys
+from medlens.queue.backpressure import (
+    BASE_WAIT_SECONDS,
+    QUEUES,
+    Backpressure,
+    QueueDepth,
+    queue_keys,
+)
 from medlens.queue.beat_schedule import beat_schedule
-from medlens.queue.celery_app import QUEUES, build_celery_config, celery_app
+from medlens.queue.celery_app import build_celery_config, celery_app
 from medlens.queue.relay import backoff
 from medlens.workers import context, failures, runtime, tasks
+from tests.support import reset_celery_clients
 
 
 @pytest.fixture
@@ -30,6 +37,7 @@ def eager(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]
     celery_app.conf.update(task_always_eager=True, task_eager_propagates=False)
     yield
     celery_app.conf.update(task_always_eager=False)
+    reset_celery_clients()  # eager runs may have created a backend for the test settings
 
 
 @dataclass
@@ -230,6 +238,7 @@ def test_events_map_to_tasks(sent: list[tuple[str, dict[str, Any]]]) -> None:
     ]
     assert sent[0][1]["args"] == [received.aggregate_id]
     assert sent[0][1]["priority"] == tasks.SCAN_PRIORITY
+    assert all(options["ignore_result"] for _, options in sent)  # no result subscriptions
     assert sent[0][1]["headers"] == {context.CONTEXT_HEADER: {"request_id": "r1"}}
     assert sent[3][1]["args"] == [["s1"], 960]
 

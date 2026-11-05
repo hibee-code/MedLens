@@ -29,7 +29,7 @@ from medlens.modules.verification.catalog import (
     BatchSpread,
     ProductFacts,
 )
-from medlens.modules.verification.codes import ReasonCode
+from medlens.modules.verification.codes import AdviceCode, ReasonCode
 from medlens.modules.verification.extraction import FieldSource, name_presence
 from medlens.modules.verification.pipeline import (
     PipelineConfig,
@@ -62,10 +62,9 @@ class DictCatalog:
     references: dict[UUID, float] = field(default_factory=lambda: {PANADOL.id: 0.93})
     alerts: dict[tuple[str, str], AlertFacts] = field(default_factory=dict)
 
-    def published_alert(self, nafdac_number: str, batch_number: str | None) -> AlertFacts | None:
-        return self.alerts.get((nafdac_number, batch_number or "")) or self.alerts.get(
-            (nafdac_number, "")
-        )
+    def published_alerts(self, nafdac_number: str, batch_number: str | None) -> list[AlertFacts]:
+        keys = {(nafdac_number, ""), (nafdac_number, batch_number or "")}
+        return [self.alerts[key] for key in sorted(keys) if key in self.alerts]
 
     def product_by_nafdac(self, nafdac_number: str) -> ProductFacts | None:
         return next((p for p in self.products if p.nafdac_number == nafdac_number), None)
@@ -91,7 +90,10 @@ class DictCatalog:
     def batch_spread(self, batch_id: UUID, since: datetime, *, exclude_scan: UUID) -> BatchSpread:
         return self.spread
 
-    def reference_similarity(self, product_id: UUID, embedding: list[float]) -> float | None:
+    def reference_similarity(
+        self, product_id: UUID, embedding: list[float], *, model_version: str
+    ) -> float | None:
+        assert model_version == "fake-embedder-1"
         return self.references.get(product_id)
 
 
@@ -432,39 +434,70 @@ def test_a_model_reading_that_echoes_an_injection_changes_nothing() -> None:
 
 
 # ------------------------------------------------------------------------- published alerts
-def alert(*, batch_specific: bool) -> AlertFacts:
-    return AlertFacts(uuid4(), "alert", batch_specific, date(2026, 10, 1))
+def notice(kind: str = "alert", *, batch_specific: bool) -> AlertFacts:
+    return AlertFacts(uuid4(), kind, batch_specific, date(2026, 10, 1))
 
 
-def test_a_published_alert_for_the_batch_makes_a_pack_suspicious() -> None:
-    catalog = DictCatalog(alerts={("A4-1234", "B2309-14"): alert(batch_specific=True)})
+def test_an_alert_for_the_product_and_batch_is_a_hard_rule() -> None:
+    catalog = DictCatalog(alerts={("A4-1234", "B2309-14"): notice(batch_specific=True)})
 
     result = outcome(Pack(), catalog)
 
     assert result.score.verdict is Verdict.SUSPICIOUS
     assert result.score.high_priority  # opens a case
-    assert ReasonCode.PUBLISHED_ALERT in result.score.reason_codes
-    assert result.signals[SignalName.COUNTERFEIT_ALERT].detail["batch_specific"] is True
+    assert result.score.reason_codes == (ReasonCode.PUBLISHED_ALERT,)
+    assert result.signals[SignalName.COUNTERFEIT_ALERT].detail["documents"]
 
 
 def test_an_alert_for_another_batch_changes_nothing() -> None:
-    catalog = DictCatalog(alerts={("A4-1234", "OTHER-1"): alert(batch_specific=True)})
+    catalog = DictCatalog(alerts={("A4-1234", "OTHER-1"): notice(batch_specific=True)})
 
     result = outcome(Pack(), catalog)
 
     assert result.score.verdict is Verdict.LIKELY_GENUINE
     assert result.signals[SignalName.COUNTERFEIT_ALERT].value == 0.0
+    assert result.signals[SignalName.PRODUCT_ALERT].value == 0.0
 
 
-def test_a_product_wide_alert_applies_to_every_batch() -> None:
-    catalog = DictCatalog(alerts={("A4-1234", ""): alert(batch_specific=False)})
+def test_a_product_only_alert_raises_risk_without_opening_a_case() -> None:
+    catalog = DictCatalog(alerts={("A4-1234", ""): notice(batch_specific=False)})
 
-    assert outcome(Pack(), catalog).score.verdict is Verdict.SUSPICIOUS
+    result = outcome(Pack(), catalog)
+
+    assert result.score.verdict is Verdict.SUSPICIOUS
+    assert not result.score.high_priority
+    assert result.score.reason_codes == (ReasonCode.ALERT_FOR_THIS_PRODUCT,)
 
 
-def test_a_failing_alert_lookup_leaves_the_signal_unavailable() -> None:
+def test_a_product_only_alert_with_another_finding_opens_a_case() -> None:
+    catalog = DictCatalog(
+        alerts={("A4-1234", ""): notice(batch_specific=False)},
+        batches={PANADOL.id: [replace(BATCH, batch_number="OTHER-1")]},  # B2309-14 undeclared
+    )
+
+    result = outcome(Pack(), catalog)
+
+    assert result.score.high_priority
+    assert ReasonCode.ALERT_FOR_THIS_PRODUCT in result.score.reason_codes
+    assert ReasonCode.BATCH_NOT_DECLARED in result.score.reason_codes
+
+
+def test_a_recalled_batch_is_suspicious_with_return_advice() -> None:
+    catalog = DictCatalog(alerts={("A4-1234", "B2309-14"): notice("recall", batch_specific=True)})
+
+    result = outcome(Pack(), catalog)
+
+    assert result.score.verdict is Verdict.SUSPICIOUS
+    assert not result.score.high_priority  # a genuine batch: no counterfeit case
+    assert result.score.reason_codes == (ReasonCode.RECALLED_BATCH,)
+    assert result.score.advice_codes[0] is AdviceCode.DO_NOT_USE_RETURN
+
+
+def test_a_failing_alert_lookup_leaves_the_signals_unavailable() -> None:
     class BrokenAlerts(DictCatalog):
-        def published_alert(self, nafdac_number: str, batch_number: str | None) -> AlertFacts:
+        def published_alerts(
+            self, nafdac_number: str, batch_number: str | None
+        ) -> list[AlertFacts]:
             raise TimeoutError
 
     result = outcome(Pack(), BrokenAlerts())
@@ -472,3 +505,12 @@ def test_a_failing_alert_lookup_leaves_the_signal_unavailable() -> None:
     assert stage_outcomes(result)["alerts"] == "failed"
     assert not result.signals[SignalName.COUNTERFEIT_ALERT].available
     assert result.score.verdict is Verdict.LIKELY_GENUINE
+
+
+def test_a_name_that_was_not_read_is_no_evidence() -> None:
+    unread = outcome(Pack(text="NAFDAC REG NO: A4-1234  BATCH NO: B2309-14  EXP: 12/2027"))
+    misspelt = outcome(Pack(text="Panadol Exxtra NAFDAC REG NO: A4-1234 BATCH NO: B2309-14"))
+
+    assert not unread.signals[SignalName.NAME_MISMATCH].available
+    assert unread.score.verdict is Verdict.LIKELY_GENUINE
+    assert misspelt.signals[SignalName.NAME_MISMATCH].value == 0.5

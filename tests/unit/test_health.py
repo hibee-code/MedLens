@@ -130,7 +130,7 @@ async def test_the_app_runs_the_monitor_only_when_enabled(
     started: list[float] = []
     monkeypatch.setattr(
         "medlens.main.start_monitor",
-        lambda service, *, interval_seconds: (
+        lambda service, *, interval_seconds, queues: (
             started.append(interval_seconds) or asyncio.create_task(asyncio.sleep(3600))
         ),
     )

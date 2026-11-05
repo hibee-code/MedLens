@@ -9,18 +9,25 @@ from fastapi import Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
-from medlens.adapters.query_embedding import CeleryQueryEmbedder
+from medlens.adapters.query_embedding import (
+    CachedQueryEmbedder,
+    CeleryQueryEmbedder,
+    CeleryReranker,
+)
 from medlens.adapters.s3 import S3Client, open_s3_client
 from medlens.adapters.sms import create_sms_adapter
 from medlens.adapters.storage import S3Storage
+from medlens.ai.gateway.cache import AnswerCache
 from medlens.ai.gateway.gateway import AsyncLLMGateway
 from medlens.ai.gateway.ledger import AsyncLedger
 from medlens.ai.gateway.providers import AsyncAnthropicProvider
 from medlens.cache.redis import create_redis_client
+from medlens.core import telemetry
 from medlens.core.config import Settings
 from medlens.core.security import JwtKeyRing
 from medlens.db.session import create_db_engine, create_session_factory
 from medlens.ports.embedding import QueryEmbeddingPort
+from medlens.ports.rerank import RerankingPort
 from medlens.ports.sms import SMSPort
 from medlens.ports.storage import StoragePort
 from medlens.queue.backpressure import QueueDepth
@@ -41,6 +48,7 @@ class Resources:
     scan_queue: QueueDepth
     llm: AsyncLLMGateway  # the assistant's gateway (the worker has its own, synchronous)
     query_embedder: QueryEmbeddingPort  # question embeddings, computed by a worker
+    reranker: RerankingPort  # the cross-encoder, run by a worker
     rate_limiter: SlidingWindowLimiter
 
 
@@ -52,6 +60,7 @@ async def open_resources(settings: Settings) -> AsyncIterator[Resources]:
             settings.database, application_name=f"{settings.observability.service_name}-api"
         )
         stack.push_async_callback(engine.dispose)
+        telemetry.instrument_engine(engine.sync_engine)
         redis = create_redis_client(settings.redis, db=settings.redis.cache_db)
         stack.push_async_callback(redis.aclose)
         s3 = await stack.enter_async_context(open_s3_client(settings.s3))
@@ -75,9 +84,22 @@ async def open_resources(settings: Settings) -> AsyncIterator[Resources]:
             storage=S3Storage(s3, settings.s3.bucket),
             broker_redis=broker_redis,
             scan_queue=QueueDepth(broker_redis),
-            llm=AsyncLLMGateway(settings.llm, provider, AsyncLedger(session_factory, redis)),
-            query_embedder=CeleryQueryEmbedder(
-                celery_app, timeout_seconds=settings.knowledge.query_embedding_timeout_seconds
+            llm=AsyncLLMGateway(
+                settings.llm,
+                provider,
+                AsyncLedger(session_factory, redis),
+                cache=AnswerCache(redis, ttl_seconds=settings.llm.answer_cache_seconds),
+            ),
+            query_embedder=CachedQueryEmbedder(
+                CeleryQueryEmbedder(
+                    celery_app, timeout_seconds=settings.knowledge.query_embedding_timeout_seconds
+                ),
+                redis,
+                model=f"{settings.embeddings.text_model}:{settings.embeddings.backend}",
+                ttl_seconds=settings.knowledge.query_cache_seconds,
+            ),
+            reranker=CeleryReranker(
+                celery_app, timeout_seconds=settings.knowledge.rerank_timeout_seconds
             ),
             rate_limiter=SlidingWindowLimiter(redis),
         )

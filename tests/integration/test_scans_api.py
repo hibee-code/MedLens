@@ -132,7 +132,7 @@ async def test_a_genuine_pack_end_to_end(api: Api) -> None:
     assert again.outcome == "skipped"  # at-least-once delivery is harmless
     assert response.status_code == 200
     assert result["status"] == "completed"
-    assert result["verdict"] == "LIKELY_GENUINE"
+    assert result["final_verdict"] == "LIKELY_GENUINE"
     assert result["product"]["nafdac_number"] == product.nafdac_number
     assert result["advice_codes"] == ["CHECK_EXPIRY_DATE"]
     assert result["analysis"] is None  # consumers never see the evidence
@@ -159,7 +159,7 @@ async def test_regulators_see_the_evidence(api: Api) -> None:
     )
 
     result = response.json()
-    assert result["verdict"] == "UNREGISTERED"
+    assert result["final_verdict"] == "UNREGISTERED"
     assert result["reason_codes"] == ["NOT_IN_REGISTRY"]
     assert result["analysis"]["scorer_version"] == "weighted-rules-v2"
     assert result["analysis"]["extracted"]["nafdac_number"]["value"] == "Z9-000001"
@@ -175,7 +175,7 @@ async def test_a_bad_photo_is_rejected_with_retake_advice(api: Api) -> None:
     result = (await api.client.get(f"/api/v1/scans/{body['id']}", headers=headers)).json()
 
     assert result["status"] == "rejected"
-    assert result["verdict"] == "INCONCLUSIVE"
+    assert result["final_verdict"] == "INCONCLUSIVE"
     assert result["reason_codes"] == ["BLURRY"]
     assert result["advice_codes"][0] == "RETAKE_PHOTO"
 
@@ -195,8 +195,8 @@ async def test_a_near_identical_photo_gets_the_earlier_answer(api: Api) -> None:
 
     scan = await stored_scan(api, second["id"])
     assert outcome.outcome == "duplicate"
-    assert scan.verdict is not None
-    assert scan.verdict.value == "UNREGISTERED"
+    assert scan.final_verdict is not None
+    assert scan.final_verdict.value == "UNREGISTERED"
     assert scan.signals is not None
     assert scan.signals["duplicate_of"] == first["id"]
 
@@ -312,7 +312,7 @@ async def test_the_fast_path_returns_the_verdict_in_one_call(api: Api) -> None:
     assert status == 200
     assert body["status"] == "completed"
     assert body["estimated_wait_seconds"] == 0
-    assert body["result"]["verdict"] == "LIKELY_GENUINE"
+    assert body["result"]["final_verdict"] == "LIKELY_GENUINE"
 
 
 async def test_a_busy_queue_skips_the_fast_path_and_grows_the_wait(api: Api) -> None:

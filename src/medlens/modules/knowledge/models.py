@@ -15,6 +15,8 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    false,
+    true,
 )
 from sqlalchemy import text as sql_text
 from sqlalchemy.dialects.postgresql import ARRAY, TSVECTOR
@@ -63,6 +65,10 @@ class KnowledgeDocument(Entity):
         server_default="professional",
     )
     source: Mapped[str | None] = mapped_column(String(200))  # e.g. "NAFDAC public alerts"
+    # Alerts and recalls trigger scan rules only when official (a regulator vouches for the
+    # source) and active (not withdrawn or superseded); both are audited when changed.
+    official: Mapped[bool] = mapped_column(default=False, server_default=false())
+    active: Mapped[bool] = mapped_column(default=True, server_default=true())
     source_url: Mapped[str | None] = mapped_column(Text)
     published_on: Mapped[date | None]
     media_type: Mapped[str] = mapped_column(String(100))

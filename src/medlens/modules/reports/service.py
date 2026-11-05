@@ -14,9 +14,11 @@ from medlens.modules.organizations.models import OrganizationType
 from medlens.modules.rbac import policies
 from medlens.modules.rbac.access import Actor
 from medlens.modules.reports.repository import (
+    LabelledCell,
     ProductCell,
     SummaryCounts,
     flagged_by_product_state_week,
+    pipeline_verdicts_against_labels,
     summary,
 )
 
@@ -28,6 +30,52 @@ class Summary:
     since: datetime
     until: datetime
     counts: SummaryCounts
+
+
+@dataclass(frozen=True, slots=True)
+class Accuracy:
+    """The pipeline's verdicts against lab results. Flagged = SUSPICIOUS or UNREGISTERED;
+    INCONCLUSIVE scans and inconclusive lab results are counted but not scored."""
+
+    since: datetime
+    until: datetime
+    cells: list[LabelledCell]
+
+    def _count(self, verdicts: set[str], outcome: str) -> int:
+        return sum(
+            cell.count
+            for cell in self.cells
+            if cell.pipeline_verdict in verdicts and cell.lab_outcome == outcome
+        )
+
+    @property
+    def confusion(self) -> dict[str, int]:
+        flagged, passed = {"SUSPICIOUS", "UNREGISTERED"}, {"LIKELY_GENUINE"}
+        return {
+            "flagged_counterfeit": self._count(flagged, "counterfeit"),
+            "flagged_genuine": self._count(flagged, "genuine"),
+            "passed_counterfeit": self._count(passed, "counterfeit"),
+            "passed_genuine": self._count(passed, "genuine"),
+        }
+
+    @property
+    def precision(self) -> float | None:
+        c = self.confusion
+        flagged = c["flagged_counterfeit"] + c["flagged_genuine"]
+        return round(c["flagged_counterfeit"] / flagged, 4) if flagged else None
+
+    @property
+    def recall(self) -> float | None:
+        c = self.confusion
+        counterfeit = c["flagged_counterfeit"] + c["passed_counterfeit"]
+        return round(c["flagged_counterfeit"] / counterfeit, 4) if counterfeit else None
+
+    @property
+    def agreement(self) -> float | None:
+        c = self.confusion
+        total = sum(c.values())
+        right = c["flagged_counterfeit"] + c["passed_genuine"]
+        return round(right / total, 4) if total else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +101,14 @@ class ReportService:
         async with UnitOfWork(self._sessions) as uow:
             counts = await summary(uow.session, policies.scan_visibility(actor), since, until)
         return Summary(since, until, counts)
+
+    async def accuracy(self, actor: Actor, days: int) -> Accuracy:
+        since, until = _window(days)
+        async with UnitOfWork(self._sessions) as uow:
+            cells = await pipeline_verdicts_against_labels(
+                uow.session, policies.scan_visibility(actor), since, until
+            )
+        return Accuracy(since, until, cells)
 
     async def manufacturer_report(
         self, actor: Actor, weeks: int, organization_id: UUID | None

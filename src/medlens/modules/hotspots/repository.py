@@ -26,7 +26,7 @@ WITH points AS (
     FROM scans s
     WHERE s.created_at >= :since AND s.created_at < :until
       AND s.status = 'completed'
-      AND COALESCE(s.verdict_override, s.verdict) IN :verdicts
+      AND s.final_verdict IN :verdicts
       AND s.location_coarse IS NOT NULL
       AND (CAST(:state AS varchar) IS NULL OR s.state = :state)
       AND (:all_states OR s.state = ANY(:states))

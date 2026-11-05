@@ -17,7 +17,8 @@ class LabelOutcome(StrEnum):
 
 class Label(Entity):
     """A human judgement on a scan, e.g. a regulator's lab result. Training and evaluation data
-    for future scorers; never changes the stored verdict."""
+    for future scorers, compared with the pipeline's verdict in accuracy reports; never changes
+    the pipeline's verdict (a case decision may set the final verdict)."""
 
     __tablename__ = "labels"
     __table_args__ = (

@@ -27,8 +27,16 @@ from purgatory import AsyncCircuitBreakerFactory, SyncCircuitBreakerFactory
 from purgatory.domain.model import OpenedState
 from pydantic import BaseModel, ValidationError
 
+from medlens.ai.gateway.cache import AnswerCache, answer_key
 from medlens.ai.gateway.ledger import AsyncSpendLedger, CallRecord, SpendLedger
-from medlens.ai.gateway.metrics import LLM_CALLS, LLM_COST_USD, LLM_LATENCY
+from medlens.ai.gateway.metrics import (
+    LLM_CACHE_HITS,
+    LLM_CALLS,
+    LLM_COST_USD,
+    LLM_DAILY_BUDGET,
+    LLM_LATENCY,
+    LLM_SPENT_TODAY,
+)
 from medlens.ai.gateway.pricing import TokenUsage, cost_usd
 from medlens.ai.gateway.providers import (
     AsyncProvider,
@@ -142,6 +150,8 @@ class _GatewayCore:
         return _Attempt(route, model_for(route.tier, self._settings), clock)
 
     def _check_budget(self, attempt: _Attempt, spent: Decimal) -> None:
+        LLM_SPENT_TODAY.set(float(spent))
+        LLM_DAILY_BUDGET.set(self._settings.daily_budget_usd)
         if spent >= Decimal(str(self._settings.daily_budget_usd)):
             raise self._blocked(attempt.route, "budget")
 
@@ -291,6 +301,7 @@ class AsyncLLMGateway(_GatewayCore):
         ledger: AsyncSpendLedger,
         *,
         breakers: AsyncCircuitBreakerFactory | None = None,
+        cache: AnswerCache | None = None,
     ) -> None:
         super().__init__(settings)
         self._provider = provider
@@ -298,6 +309,7 @@ class AsyncLLMGateway(_GatewayCore):
         self._breakers = breakers or AsyncCircuitBreakerFactory(
             default_threshold=BREAKER_THRESHOLD, default_ttl=BREAKER_RESET_SECONDS
         )
+        self._cache = cache if cache is not None and cache.enabled else None
 
     async def run[OutputT: BaseModel](
         self,
@@ -308,9 +320,19 @@ class AsyncLLMGateway(_GatewayCore):
         user_id: UUID | None = None,
         subject: Subject | None = None,
     ) -> OutputT:
-        attempt = self._start(route_name, time.perf_counter())
-        self._check_budget(attempt, await self._ledger.spent_today())
+        attempt = self._start(route_name, time.perf_counter())  # the kill switch first
         request = self._request(attempt, parts, output_model)
+        key = None
+        if self._cache is not None and attempt.route.cacheable:
+            key = answer_key(request, attempt.route.prompt_version)
+            cached = await self._cache.get(key)
+            if cached is not None:
+                parsed, problems = _validate(output_model, cached)
+                if parsed is not None:
+                    LLM_CACHE_HITS.labels(route=attempt.route.name).inc()
+                    log.info("llm.cache_hit", route=attempt.route.name)
+                    return parsed
+        self._check_budget(attempt, await self._ledger.spent_today())
 
         async def finish(outcome: LLMCallOutcome, error: str | None = None) -> None:
             await self._ledger.record(
@@ -340,6 +362,8 @@ class AsyncLLMGateway(_GatewayCore):
             await finish(LLMCallOutcome.INVALID_OUTPUT, "ValidationError")
             raise LLMCallFailedError("invalid_output")
         await finish(LLMCallOutcome.OK)
+        if key is not None and self._cache is not None:
+            await self._cache.put(key, response.text)
         return parsed
 
     async def _call(self, request: ProviderRequest, attempt: _Attempt) -> ProviderResponse:

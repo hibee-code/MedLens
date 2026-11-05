@@ -3,7 +3,7 @@ from uuid import UUID
 
 from pydantic import ConfigDict, Field
 
-from medlens.core.schemas import ReadModel
+from medlens.core.schemas import ReadModel, UpdateModel
 from medlens.modules.knowledge.models import DocumentKind, DocumentStatus, Visibility
 
 _DOC = "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0f01"
@@ -22,6 +22,8 @@ class DocumentRead(ReadModel):
                     "source": "NAFDAC public alerts",
                     "source_url": "https://nafdac.gov.ng/public-alert-041-2026/",
                     "published_on": "2026-10-14",
+                    "official": True,
+                    "active": True,
                     "media_type": "application/pdf",
                     "size_bytes": 182344,
                     "status": "indexed",
@@ -43,6 +45,8 @@ class DocumentRead(ReadModel):
     source: str | None
     source_url: str | None
     published_on: date | None
+    official: bool = Field(description="A regulator vouches for the source.")
+    active: bool = Field(description="false: withdrawn or superseded.")
     media_type: str
     size_bytes: int
     status: DocumentStatus = Field(
@@ -55,6 +59,15 @@ class DocumentRead(ReadModel):
     error_code: str | None
     created_at: datetime
     indexed_at: datetime | None
+
+
+class DocumentUpdate(UpdateModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"active": False}]})
+
+    official: bool | None = Field(
+        default=None, description="The source is official (e.g. a NAFDAC publication)."
+    )
+    active: bool | None = Field(default=None, description="false withdraws the document.")
 
 
 class SearchResultItem(ReadModel):
@@ -70,6 +83,9 @@ class SearchResultItem(ReadModel):
     score: float = Field(description="Reciprocal Rank Fusion score (higher is better).")
     matched_by: list[str] = Field(description="vector, keyword and/or nafdac_number.")
     similarity: float | None = Field(description="Cosine similarity, if found by vector.")
+    rerank_score: float | None = Field(
+        default=None, description="The cross-encoder's relevance (0-1), when reranked."
+    )
 
 
 class SearchResults(ReadModel):
@@ -93,8 +109,10 @@ class SearchResults(ReadModel):
                             "score": 0.0325,
                             "matched_by": ["keyword", "vector"],
                             "similarity": 0.87,
+                            "rerank_score": 0.94,
                         }
                     ],
+                    "reranked": True,
                 }
             ]
         }
@@ -104,5 +122,9 @@ class SearchResults(ReadModel):
     vector_search: bool = Field(
         description="false: the question could not be embedded in time; keywords and NAFDAC "
         "numbers only."
+    )
+    reranked: bool = Field(
+        default=False,
+        description="The cross-encoder ordered the results (false: fused order).",
     )
     results: list[SearchResultItem]

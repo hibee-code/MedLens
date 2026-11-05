@@ -65,8 +65,8 @@ def _read(scan: Scan, product: Product | None, *, analysis: bool) -> ScanRead:
     return ScanRead(
         id=scan.id,
         status=scan.status,
-        verdict=scan.verdict_override or scan.verdict,
-        verdict_overridden=scan.verdict_override is not None,
+        final_verdict=scan.final_verdict,
+        reviewed=scan.reviewed,
         confidence=scan.confidence,
         reason_codes=list(scan.reason_codes),
         advice_codes=list(scan.advice_codes),
@@ -93,8 +93,10 @@ def _read(scan: Scan, product: Product | None, *, analysis: bool) -> ScanRead:
                 processing_ms=scan.processing_ms,
                 error_code=scan.error_code,
                 llm_used=scan.llm_used,
-                pipeline_verdict=scan.verdict,
+                pipeline_verdict=scan.pipeline_verdict,
                 override_case_id=scan.override_case_id,
+                overridden_at=scan.overridden_at,
+                override_note=scan.override_note,
             )
             if analysis
             else None
@@ -206,7 +208,7 @@ async def list_scans(
     actor: CurrentActor,
     service: ServiceDep,
     params: Annotated[PageParams, Depends(page_params)],
-    verdict: Verdict | None = None,
+    verdict: Annotated[Verdict | None, Query(description="The final verdict.")] = None,
     scan_status: Annotated[ScanStatus | None, Query(alias="status")] = None,
     state: NigerianState | None = None,
     since: Annotated[datetime | None, Query(description="Created at or after (ISO 8601).")] = None,
@@ -214,7 +216,7 @@ async def list_scans(
 ) -> Page[ScanRead]:
     filters: list[ColumnElement[bool]] = []
     if verdict is not None:
-        filters.append(Scan.verdict == verdict)
+        filters.append(Scan.final_verdict == verdict)
     if scan_status is not None:
         filters.append(Scan.status == scan_status)
     if state is not None:

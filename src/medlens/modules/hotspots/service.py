@@ -1,5 +1,5 @@
-"""Hotspots: clusters of SUSPICIOUS and UNREGISTERED scans (the verdict shown, after any case
-override) by place and time, for regulators. Regulators see clusters of scans in their
+"""Hotspots: clusters of SUSPICIOUS and UNREGISTERED scans (their final verdict, after any
+case decision) by place and time, for regulators. Regulators see clusters of scans in their
 jurisdiction only; results are cached in Redis for five minutes per parameters and scope."""
 
 import hashlib

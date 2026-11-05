@@ -6,7 +6,7 @@ from medlens.modules.products.models import RegistrationStatus
 from medlens.modules.scans.models import Verdict
 from medlens.modules.verification.codes import AdviceCode, ReasonCode
 from medlens.modules.verification.scoring import (
-    WEIGHTS_V1,
+    WEIGHTS,
     ScoreInput,
     Signal,
     SignalName,
@@ -139,19 +139,19 @@ def test_verdict_table(
 def test_registration_risk_comes_from_its_signal() -> None:
     score = SCORER.score(identified(status=RegistrationStatus.SUSPENDED))
 
-    assert score.risk_score == pytest.approx(WEIGHTS_V1[SignalName.REGISTRATION])
+    assert score.risk_score == pytest.approx(WEIGHTS[SignalName.REGISTRATION])
     assert score.verdict is Verdict.SUSPICIOUS
 
 
 def test_risk_is_clipped_to_one() -> None:
-    score = SCORER.score(identified(**dict.fromkeys(WEIGHTS_V1, 1.0)))
+    score = SCORER.score(identified(**dict.fromkeys(WEIGHTS, 1.0)))
 
     assert score.risk_score == 1.0
 
 
 def test_confidence_grows_with_coverage() -> None:
     sparse = SCORER.score(identified())
-    full = SCORER.score(identified(**dict.fromkeys(WEIGHTS_V1, 0.0)))
+    full = SCORER.score(identified(**dict.fromkeys(WEIGHTS, 0.0)))
 
     assert sparse.confidence is not None
     assert full.confidence is not None
@@ -198,7 +198,7 @@ def test_the_documented_weights_match_the_code() -> None:
     from pathlib import Path
 
     docs = (Path(__file__).resolve().parents[2] / "docs" / "scoring.md").read_text()
-    for name, weight in WEIGHTS_V1.items():
+    for name, weight in WEIGHTS.items():
         assert f"| `{name.value}` | {weight:.2f} |" in docs, name
 
 

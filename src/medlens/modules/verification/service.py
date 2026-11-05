@@ -23,13 +23,14 @@ from medlens.modules.scans.models import Scan, ScanStatus, Verdict
 from medlens.modules.scans.repository import id_window
 from medlens.modules.verification.catalog import Catalog
 from medlens.modules.verification.codes import ReasonCode
-from medlens.modules.verification.metrics import record_scan
+from medlens.modules.verification.metrics import SCANS, record_scan
 from medlens.modules.verification.pipeline import (
     PipelineConfig,
     PipelineResult,
     ScanInput,
     VerificationPipeline,
 )
+from medlens.modules.verification.product_cache import ProductCache
 from medlens.modules.verification.repository import SqlCatalog
 from medlens.modules.verification.scoring import WeightedRuleScorer
 from medlens.ports.storage import ObjectNotFoundError, SyncStoragePort
@@ -79,10 +80,10 @@ class Processed:
 def needs_case(scan: Scan) -> bool:
     """High-risk scans a regulator should review: SUSPICIOUS with high priority, or UNREGISTERED
     (which the scorer only returns for a clearly read NAFDAC number)."""
-    if scan.verdict is Verdict.UNREGISTERED:
+    if scan.pipeline_verdict is Verdict.UNREGISTERED:
         return True
     signals = scan.signals or {}
-    return scan.verdict is Verdict.SUSPICIOUS and bool(signals.get("high_priority"))
+    return scan.pipeline_verdict is Verdict.SUSPICIOUS and bool(signals.get("high_priority"))
 
 
 class VerificationService:
@@ -93,11 +94,13 @@ class VerificationService:
         pipeline: PipelineFactory,
         *,
         duplicate_window: timedelta = timedelta(hours=24),
+        product_cache: ProductCache | None = None,
     ) -> None:
         self._sessions = sessions
         self._storage = storage
         self._pipeline = pipeline
         self._duplicate_window = duplicate_window
+        self._product_cache = product_cache
 
     def process_scan(self, scan_id: UUID) -> Processed:
         started = time.perf_counter()
@@ -111,7 +114,7 @@ class VerificationService:
                 image = self._storage.get(scan.image_s3_key or "")
             except ObjectNotFoundError:
                 return self._failed(scan, "image_missing")
-            catalog = SqlCatalog(session)
+            catalog = SqlCatalog(session, self._product_cache)
             try:
                 result = self._pipeline(catalog).run(
                     ScanInput(
@@ -141,7 +144,8 @@ class VerificationService:
                 outcome = "rejected" if scan.status is ScanStatus.REJECTED else "completed"
             elapsed = time.perf_counter() - started
             scan.processing_ms = round(elapsed * 1000)
-            record_scan(scan.verdict.value if scan.verdict else None, outcome, elapsed, result)
+            verdict = scan.final_verdict.value if scan.final_verdict else None
+            record_scan(verdict, outcome, elapsed, result)
             outbox.emit_sync(
                 session,
                 outbox.SCAN_COMPLETED,
@@ -149,18 +153,18 @@ class VerificationService:
                 aggregate_id=scan.id,
                 payload={
                     "created_at": scan.created_at.isoformat(),
-                    "verdict": scan.verdict.value if scan.verdict else None,
+                    "verdict": verdict,
                     "needs_case": needs_case(scan),
                 },
             )
             log.info(
                 "scan.scored",
                 scan_id=str(scan.id),
-                verdict=scan.verdict.value if scan.verdict else None,
+                verdict=verdict,
                 score=scan.risk_score,
                 outcome=outcome,
             )
-            return Processed(scan.id, outcome, scan.verdict)
+            return Processed(scan.id, outcome, scan.final_verdict)
 
     def _start(self, scan_id: UUID) -> bool:
         """Mark the scan processing (visible to clients). False when it is finished or locked
@@ -182,6 +186,7 @@ class VerificationService:
     def _failed(scan: Scan, code: str) -> Processed:
         scan.status = ScanStatus.FAILED
         scan.error_code = code
+        SCANS.labels(verdict="none", outcome="failed").inc()
         log.warning("scan.failed", scan_id=str(scan.id), error_code=code)
         return Processed(scan.id, "failed")
 
@@ -207,7 +212,8 @@ def _save_result(scan: Scan, result: PipelineResult) -> None:
     scan.matched_product_id = result.match.product.id if result.match else None
     scan.matched_batch_id = result.batch.id if result.batch else None
     scan.signals = result.signals_json()
-    scan.verdict = score.verdict
+    scan.pipeline_verdict = score.verdict
+    scan.final_verdict = score.verdict
     scan.risk_score = score.risk_score
     scan.confidence = score.confidence
     scan.scorer_version = score.scorer_version
@@ -227,7 +233,7 @@ def _copy_result(scan: Scan, earlier: Scan, result: PipelineResult) -> None:
         "extracted",
         "matched_product_id",
         "matched_batch_id",
-        "verdict",
+        "pipeline_verdict",
         "risk_score",
         "confidence",
         "scorer_version",
@@ -236,5 +242,6 @@ def _copy_result(scan: Scan, earlier: Scan, result: PipelineResult) -> None:
         "status",
     ):
         setattr(scan, name, getattr(earlier, name))
+    scan.final_verdict = earlier.pipeline_verdict  # a review of the earlier scan is its own
     scan.signals = {**(earlier.signals or {}), "duplicate_of": str(earlier.id)}
     scan.llm_used = result.llm_used

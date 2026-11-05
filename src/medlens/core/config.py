@@ -164,8 +164,11 @@ class RedisSettings(_Group):
     cache_db: int = Field(default=0, ge=0, le=15)
     broker_db: int = Field(default=1, ge=0, le=15)
     result_db: int = Field(default=2, ge=0, le=15)
-    socket_timeout_seconds: float = Field(default=2.0, gt=0)
-    socket_connect_timeout_seconds: float = Field(default=2.0, gt=0)
+    # Redis answers in milliseconds: short timeouts and one quick retry keep requests fast
+    # when it is down (callers fail open), instead of the client's default ten retries.
+    socket_timeout_seconds: float = Field(default=1.0, gt=0)
+    socket_connect_timeout_seconds: float = Field(default=0.5, gt=0)
+    retries: int = Field(default=1, ge=0, le=5)
     max_connections: int = Field(default=50, ge=1)
 
     @model_validator(mode="after")
@@ -284,6 +287,9 @@ class LLMSettings(_Group):
     prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
     # Server-side refusal fallback on the balanced tier (Claude API only).
     refusal_fallback: bool = True
+    # Validated answers of cacheable routes (the assistant) are reused for identical requests
+    # (same model, prompt version, documents and question) for this long; 0 turns it off.
+    answer_cache_seconds: int = Field(default=3600, ge=0)
 
     @model_validator(mode="after")
     def _priced(self) -> Self:
@@ -347,15 +353,26 @@ class CryptoSettings(_Group):
 
 
 class EmbeddingSettings(_Group):
-    # sentence-transformers models, loaded once per worker process (the `ml` group). Without
-    # them, visual matching and semantic search are unavailable and degrade gracefully.
+    # Models loaded once per worker process (the `ml` group). Without them, visual matching,
+    # semantic search and reranking are unavailable and degrade gracefully.
     enabled: bool = True
+    # onnx: the exports in onnx_dir (scripts/export_onnx.py, baked into the worker image);
+    # torch: sentence-transformers. onnx falls back to torch when the exports are missing.
+    backend: Literal["onnx", "torch"] = "onnx"
+    onnx_dir: str = "/opt/models/onnx"
+    onnx_threads: int = Field(default=2, ge=1, le=32)  # per model, per worker process
+    # ONNX Runtime's CPU memory arena keeps peak allocations for reuse. Measured on the worker
+    # image (three models, one process, after a large rerank batch): on, about 1.9 GB resident
+    # and fastest; off, about 0.9 GB and 50-60% slower on large batches. Turn it off on hosts
+    # short of memory.
+    onnx_memory_arena: bool = True
     image_model: str = "clip-ViT-B-32"
     # Migrations read the dimensions when creating vector columns; changing a model's
     # dimension needs a new migration. pgvector HNSW indexes take at most 2000 dimensions.
     image_dimension: int = Field(default=512, ge=1, le=2000)
     text_model: str = "intfloat/multilingual-e5-small"
     text_dimension: int = Field(default=384, ge=1, le=2000)
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 
 class KnowledgeSettings(_Group):
@@ -374,6 +391,19 @@ class KnowledgeSettings(_Group):
     rrf_k: int = Field(default=60, ge=1)
     # The API embeds questions through the worker; slower than this, search runs without it.
     query_embedding_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    # Re-order the best fused candidates with the cross-encoder (in a worker); slower than the
+    # timeout, the fused order stands.
+    rerank: bool = True
+    rerank_candidates: int = Field(default=20, ge=1, le=100)
+    rerank_timeout_seconds: float = Field(default=5.0, gt=0, le=60)
+    # The assistant's evidence bar on reranked results: passages the cross-encoder scores
+    # below it are not shown to the model, and with none left it answers "not enough
+    # evidence" without a model call. Passages naming the asked NAFDAC number always count.
+    # Measured on seed/eval_questions.csv: answerable questions' best passage 0.96 or more,
+    # unanswerable ones 0.02 or less. Cosine similarity cannot separate them (0.80-0.92).
+    min_rerank_score: float = Field(default=0.1, ge=0, le=1)
+    # Question embeddings are cached in Redis (per model) for this long; 0 turns it off.
+    query_cache_seconds: int = Field(default=86400, ge=0)
 
     @model_validator(mode="after")
     def _overlap(self) -> Self:
@@ -406,6 +436,9 @@ class VerificationSettings(_Group):
     duplicate_window_hours: int = Field(default=24, ge=0, le=720)
     # Stages still pending after this long are skipped (degrading confidence, not failing).
     pipeline_timeout_seconds: float = Field(default=20.0, gt=0, le=300)
+    # Registered products looked up by NAFDAC number are cached in Redis for this long. Their
+    # facts change only through the Greenbook import, which waits this long to show. 0: off.
+    product_cache_seconds: int = Field(default=60, ge=0, le=3600)
     # real: OpenCV quality gate, zxing barcodes, Tesseract when installed (the `vision` group);
     # fake: no readers (tests).
     readers: Literal["real", "fake"] = "real"
@@ -428,6 +461,9 @@ class QueueSettings(_Group):
     relay_max_attempts: int = Field(default=10, ge=1, le=50)
     # Task limits. The broker re-delivers unacknowledged messages after the visibility
     # timeout, which must exceed the longest task.
+    # Pool processes per worker container. Each loads the embedding models (about 1 GB), so
+    # scale with containers rather than processes.
+    worker_concurrency: int = Field(default=2, ge=1, le=32)
     task_soft_time_limit_seconds: int = Field(default=120, ge=1)
     task_time_limit_seconds: int = Field(default=180, ge=1)
     visibility_timeout_seconds: int = Field(default=3600, ge=60)

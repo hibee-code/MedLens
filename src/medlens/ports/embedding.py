@@ -10,6 +10,10 @@ class EmbeddingPort(Protocol):
 
     def embed_image(self, image: bytes) -> list[float]: ...
 
+    def probe_dimension(self) -> int:
+        """The model's real output size (checked against the configured one at start)."""
+        ...
+
 
 class TextEmbeddingPort(Protocol):
     """Text embeddings for document search. Passages and queries may be encoded differently
@@ -21,6 +25,8 @@ class TextEmbeddingPort(Protocol):
     def embed_passages(self, texts: Sequence[str]) -> list[list[float]]: ...
 
     def embed_query(self, text: str) -> list[float]: ...
+
+    def probe_dimension(self) -> int: ...
 
 
 class QueryEmbeddingPort(Protocol):

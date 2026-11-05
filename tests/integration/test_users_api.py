@@ -40,7 +40,13 @@ async def test_erasure_removes_personal_data_and_keeps_scans(api: Api) -> None:
     pharmacy = await api.create_org(OrganizationType.PHARMACY)
     user: User = await api.reload(User, user_id)
     await api.add_member(user, pharmacy, RoleName.PHARMACY_STAFF)
-    scan = await api._save(Scan(user_id=user.id, verdict=Verdict.SUSPICIOUS))
+    scan = await api._save(
+        Scan(
+            user_id=user.id,
+            pipeline_verdict=Verdict.SUSPICIOUS,
+            final_verdict=Verdict.SUSPICIOUS,
+        )
+    )
 
     response = await api.client.delete("/api/v1/users/me", headers=headers)
 

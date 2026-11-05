@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Self
 from uuid import UUID
 
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from medlens.core.identifiers import NigerianState
 from medlens.core.schemas import InputModel, ReadModel, SafeText, UpdateModel
@@ -14,10 +14,9 @@ from medlens.modules.scans.models import Verdict
 
 class CaseScan(ReadModel):
     id: UUID
-    verdict: Verdict | None = Field(description="The pipeline's verdict.")
-    verdict_override: Verdict | None = Field(
-        default=None, description="The verdict set by this or another case decision, if any."
-    )
+    pipeline_verdict: Verdict | None = Field(description="The scorer's verdict (never changes).")
+    final_verdict: Verdict | None = Field(description="What clients see.")
+    reviewed: bool = Field(default=False, description="A case decision set the final verdict.")
     reason_codes: list[str]
     signals: dict[str, Any] | None = Field(default=None, description="The scorer's evidence.")
     extracted: dict[str, Any] | None = Field(default=None, description="Fields read off the pack.")
@@ -42,7 +41,9 @@ class CaseRead(ReadModel):
                     "lab_result": None,
                     "scan": {
                         "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e80",
-                        "verdict": "UNREGISTERED",
+                        "pipeline_verdict": "UNREGISTERED",
+                        "final_verdict": "UNREGISTERED",
+                        "reviewed": False,
                         "reason_codes": ["NOT_IN_REGISTRY"],
                         "created_at": "2026-11-03T09:00:00Z",
                     },
@@ -99,6 +100,7 @@ class LabResult(InputModel):
                     "lab_reference": "NAFDAC-LAB/KN/2026/0412",
                     "notes": "No active ingredient detected.",
                     "override_verdict": "SUSPICIOUS",
+                    "override_note": "Lab found no artemether; counterfeit confirmed.",
                 }
             ]
         }
@@ -110,8 +112,36 @@ class LabResult(InputModel):
     override_verdict: Verdict | None = Field(
         default=None,
         description=(
-            "Replace the verdict shown for the scan (audited; the pipeline's verdict is kept). "
-            "counterfeit allows SUSPICIOUS or UNREGISTERED, genuine allows LIKELY_GENUINE, "
-            "inconclusive allows none."
+            "Set the scan's final verdict (audited, reversible; the pipeline's verdict is "
+            "kept). counterfeit allows SUSPICIOUS or UNREGISTERED, genuine allows "
+            "LIKELY_GENUINE, inconclusive allows none. Requires override_note."
         ),
     )
+    override_note: SafeText | None = Field(default=None, min_length=5, max_length=2000)
+
+    @model_validator(mode="after")
+    def _note_with_override(self) -> Self:
+        if self.override_verdict is not None and not self.override_note:
+            raise ValueError("override_note is required with override_verdict")
+        return self
+
+
+class VerdictOverride(InputModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"verdict": "SUSPICIOUS", "note": "Second lab confirmed the counterfeit."}]
+        }
+    )
+
+    verdict: Verdict
+    note: SafeText = Field(min_length=5, max_length=2000, description="Why (required).")
+
+
+class OverrideRevert(InputModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [{"note": "Lab sample was mislabelled; decision withdrawn."}]
+        }
+    )
+
+    note: SafeText = Field(min_length=5, max_length=2000, description="Why (required).")

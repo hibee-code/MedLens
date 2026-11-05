@@ -7,6 +7,7 @@ and index names come from the naming convention on the target metadata (db/base.
 from typing import Any
 
 import sqlalchemy as sa
+from alembic import op
 from geoalchemy2 import Geography
 from sqlalchemy.dialects.postgresql import JSONB
 
@@ -72,3 +73,32 @@ def empty_array(name: str, item_type: sa.types.TypeEngine[Any]) -> sa.Column[Any
 
 def empty_json(name: str) -> sa.Column[Any]:
     return sa.Column(name, JSONB(), server_default=sa.text("'{}'::jsonb"), nullable=False)
+
+
+def resize_vectors(
+    table: str, column: str, dimension: int, *, index: str, model_column: str
+) -> None:
+    """Make ``table.column`` a vector of ``dimension`` if it is not one already. Vectors of
+    another size cannot be compared, so they are cleared (with their model version, so the
+    embedding jobs recompute them) and the HNSW index is rebuilt. Idempotent."""
+    current = op.get_bind().scalar(
+        sa.text(
+            "SELECT atttypmod FROM pg_attribute "
+            "WHERE attrelid = CAST(:table AS regclass) AND attname = :column"
+        ).bindparams(table=table, column=column)
+    )
+    if current == dimension:
+        return
+    op.drop_index(index, table_name=table)
+    op.execute(
+        f"ALTER TABLE {table} ALTER COLUMN {column} TYPE vector({int(dimension)}) USING NULL"
+    )
+    op.execute(f"UPDATE {table} SET {model_column} = NULL")
+    op.create_index(
+        index,
+        table,
+        [column],
+        postgresql_using="hnsw",
+        postgresql_with={"m": 16, "ef_construction": 64},
+        postgresql_ops={column: "vector_cosine_ops"},
+    )

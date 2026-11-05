@@ -31,10 +31,10 @@ MedLens never says a pack is "safe" or "100% genuine".
  └─────────────────┼──────────────────────────────────────────────────────────────────────────┘
                    │ transactional outbox → relay (Celery Beat)
                    ▼
- ┌──────────────────────── Celery workers (OpenCV, zxing-cpp, Tesseract, models) ──────────────┐
+ ┌──────────────── Celery workers (OpenCV, zxing-cpp, Tesseract, ONNX Runtime models) ─────────┐
  │ scans.pipeline: quality gate → barcode (GS1) → OCR → vision LLM (missing fields only)       │
  │                 → register match → batch checks → published alerts → visual match → score   │
- │ ml.embed: reference-image and document embeddings, question embeddings for search           │
+ │ ml.embed: reference-image and document embeddings; question embeddings and reranking       │
  │ maintenance: hotspot snapshots, partitions, retention                                       │
  └─────────────────────────────────────────────────────────────────────────────────────────────┘
           │                         │                              │
@@ -66,7 +66,22 @@ make seed SEED_ARGS="--staff-password <a long password>"   # products, batches, 
 make embeddings      # embed seeded reference images and documents (workers must be running)
 make eval            # scan accuracy and assistant metrics (see below)
 make check           # lint, mypy --strict, all tests with coverage (needs Docker)
+make audit           # pip-audit on the locked dependencies, bandit on src
+make ci              # check + audit (CI also runs the eval and builds both images)
 ```
+
+Models: the worker image exports CLIP ViT-B/32 (image, 512-d), multilingual-e5-small (text,
+384-d, int8) and the ms-marco-MiniLM-L-6-v2 reranker to ONNX while it builds (the `models`
+stage; parity with the originals is checked there) and runs them on ONNX Runtime, without
+torch and offline. Each of the `MEDLENS_QUEUE__WORKER_CONCURRENCY=2` pool processes uses about
+1.1 GB at rest and up to about 1.9 GB after large batches;
+`MEDLENS_EMBEDDINGS__ONNX_MEMORY_ARENA=false` keeps it near 1 GB at some speed cost. For local
+work outside Docker: `make install-ml` (adds ONNX Runtime and the
+torch export tools) and `make onnx` (exports to `models/onnx`).
+
+Dependency groups: `dev` and `vision` by default; `ml` (ONNX Runtime, tokenizers, LightGBM:
+worker image), `ml-export` (torch CPU, sentence-transformers, onnx: the export stage only),
+`ocr-benchmark` (PaddleOCR: never in an image).
 
 Seed users: `consumer` (+2348030000001, signs in with an SMS code, printed in the API log by
 the console SMS provider), `pharmacy.staff@medlens.test`, `manufacturer.staff@medlens.test`,
@@ -85,12 +100,13 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
 | Endpoint | Who | What |
 |---|---|---|
 | `POST /scans`, `GET /scans/{id}`, `GET /scans` | anyone (guests with `X-Device-Id`) | Submit a photo (202, then poll), read verdicts |
-| `GET /cases`, `POST /cases/{id}/lab-result`, `GET /cases/{id}/image` | regulators | Review high-risk scans, record lab results, override verdicts (audited) |
+| `GET /cases`, `POST /cases/{id}/lab-result`, `/cases/{id}/override`, `GET /cases/{id}/image` | regulators | Review high-risk scans, record lab results, decide final verdicts (audited, reversible) |
 | `GET /hotspots` | regulators | PostGIS DBSCAN clusters of flagged scans, cached 5 minutes |
 | `GET /stats/summary` | regulators, admins | Scans by verdict, state and day; LLM share and cost |
+| `GET /stats/accuracy` | regulators, admins | The pipeline's verdicts against lab results: precision, recall |
 | `GET /manufacturer/scans` | manufacturers | Flagged scans of own products by state and week, cells < 5 suppressed |
-| `POST /knowledge/documents`, `GET /knowledge/search` | regulators upload; professionals search | Alerts, recalls, SOPs; hybrid search |
-| `POST /assistant/ask` | pharmacists, manufacturers, regulators | Answers with checked citations |
+| `POST /knowledge/documents`, `GET /knowledge/search` | regulators upload; professionals search | Alerts, recalls, SOPs; hybrid search (vectors + keywords, fused, then reranked) |
+| `POST /assistant/ask`, `POST /assistant/ask/stream` | pharmacists, manufacturers, regulators | Answers with checked citations; the stream variant sends progress as server-sent events, then the checked answer |
 | `GET /admin/ai/usage` | platform admins | Model calls, tokens, cost, budget, kill switch |
 | `/auth/*`, `/users/me`, `/organizations/*`, `/products/*` | | Sign-in, accounts, onboarding, register |
 
@@ -112,6 +128,18 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
   assistant; a daily budget checked before every call; a circuit breaker; every call metered
   (`llm_calls`: model, prompt version, tokens, cost, latency, outcome). Without AI, scans still
   get verdicts and the assistant returns search results.
+* **Retrieval.** Questions are embedded by a worker (cached in Redis for a day), searched by
+  vector and by keyword and NAFDAC number, fused with Reciprocal Rank Fusion, then the top 20
+  are reranked by a cross-encoder. Each step degrades: no worker means keyword search only, no
+  reranker means the fused order (`reranked: false` in the response). The reranker's score is
+  also the assistant's evidence bar (`MEDLENS_KNOWLEDGE__MIN_RERANK_SCORE`, 0.1): weaker
+  passages are not shown to the model, and with none left the answer is "not enough evidence"
+  (`weak_evidence`) without a model call. Embedding similarity alone cannot do this: relevant
+  and irrelevant passages both score 0.80-0.92.
+* **Caches.** Product facts in the worker (60 s, including "not registered"), question
+  embeddings (a day, per model), assistant answers (an hour, keyed by model, prompt version
+  and the exact messages, so a new document or prompt version misses the cache; the kill switch
+  and the per-feature switch are checked before the cache, and hits are not metered).
 * **Privacy.** Photos are re-encoded without metadata; locations are rounded to about 1 km;
   phone numbers are encrypted; personal data is scrubbed from documents and questions before
   embedding or prompting; manufacturers see only aggregates.
@@ -120,6 +148,26 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
   OCR benchmark in the roadmap). The sample documents in `seed/documents` are marked as samples,
   not official notices. Coordinates are not mapped to states until boundary data is loaded.
 
+## Operations
+
+* **Metrics.** The API serves `/metrics` on its port (do not route it publicly); workers serve
+  all pool processes' metrics on port 9100. HTTP, scans and stages, queue depth, outbox
+  dead letters, failed tasks, LLM spend against the daily budget, cache hits.
+* **Alerts and dashboard.** `docker/observability/alerts.yml` (Redis down, skipped revocation
+  checks, scan backlog and full queue, slow or failing scans, dead letters, failing tasks, LLM
+  budget nearly spent or spent, LLM errors, HTTP 5xx). Grafana provisions the MedLens dashboard
+  (`make dashboard` regenerates it). `docker compose --profile observability up -d --wait` adds
+  the collector, Jaeger, Prometheus (:9090) and Grafana (:3000).
+* **Tracing and errors.** Set `MEDLENS_OBSERVABILITY__OTLP_ENDPOINT` (for example
+  `http://otel-collector:4318`) to export traces of requests, SQL, Redis, outgoing HTTP and
+  Celery tasks; `MEDLENS_OBSERVABILITY__TRACES_SAMPLE_RATE` samples them (0.1). Log lines carry
+  `trace_id` and `span_id`. `MEDLENS_OBSERVABILITY__SENTRY_DSN` turns on Sentry for errors only,
+  without request bodies, local variables or personal data.
+* **Redis.** Every call has a 1 s timeout and one retry with jittered backoff: an outage costs
+  milliseconds per request, and the fail-open rules in the decision log apply.
+* **CI.** `.github/workflows/ci.yml`: lint and types, tests with coverage, pip-audit and
+  bandit, the scan eval (fails under 90% accuracy), and both image builds.
+
 ## Evaluation
 
 `make eval` runs `scripts/eval.py`: the pipeline on the 17 packs in `seed/test_packs` (expected
@@ -127,13 +175,21 @@ verdicts in `expected.csv`), and the assistant on `seed/eval_questions.csv` (ans
 unanswerable questions). It prints accuracy per verdict, the share of scans that needed the
 LLM, mean latency, citation correctness, abstain accuracy and total cost. With
 `ANTHROPIC_API_KEY` set it uses Claude; otherwise stand-ins (the vision stand-in reads each
-pack's printed fields from the CSV).
+pack's printed fields from the CSV). Where the models are installed (the worker image, or
+`make install-ml` and `make onnx`), the assistant's retrieval uses vectors and the reranker,
+as in production; the report says which.
+
+`scripts/ocr_benchmark.py` compares the readers (Tesseract, PaddleOCR, the vision LLM) on
+labelled photos through the pipeline's own parsers ([docs/ocr-benchmark.md](docs/ocr-benchmark.md)).
+On the synthetic packs it is a smoke test; the OCR decision needs real photos.
 
 ## Roadmap to the production plan
 
-1. OCR benchmark on 100+ labelled real pack photos (Tesseract vs PaddleOCR vs the vision LLM).
-2. Reference images from manufacturers at scale, then a calibrated model scorer (LightGBM)
-   trained on lab-confirmed labels, shadowed against the rule-based scorer.
+1. Run the OCR benchmark on 100+ labelled real pack photos (the script is ready; the photos
+   are not).
+2. Real reference images from manufacturers (the seed has synthetic ones for five products, so
+   the visual signal works end to end), then a calibrated model scorer (LightGBM) trained on
+   lab-confirmed labels, shadowed against the rule-based scorer.
 3. Investigation agents with human approval for consequential actions (publishing alerts,
    notifying manufacturers) and a Model Context Protocol server for regulators' tools.
 4. State boundaries (derive the state from coordinates), regulator audit access, bulk stock

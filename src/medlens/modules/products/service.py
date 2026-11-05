@@ -159,7 +159,8 @@ class BatchService:
             product = await self._writable(uow.session, actor, nafdac_number)
             created = await self._upsert(uow.session, actor, product, {number: body})
             batch = await BatchRepository(uow.session).by_number(product.id, number)
-            assert batch is not None  # noqa: S101 - just written
+            if batch is None:  # just written in this transaction
+                raise RuntimeError(f"batch {number} vanished after the upsert")
             await AuditService(uow.session).record(
                 "batch.created" if created else "batch.updated",
                 actor_user_id=actor.user_id,

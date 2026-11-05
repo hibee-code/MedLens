@@ -42,9 +42,14 @@ them.
    * registration revoked (`REGISTRATION_REVOKED`): floor at the high-priority threshold;
    * the pack's expiry date (read from the pack, else the declared batch's) has passed
      (`PACK_EXPIRED`): floor at the suspicious threshold;
-   * a published NAFDAC alert or recall in the knowledge base names the product, either for
-     every batch or for the batch on the pack (`PUBLISHED_ALERT`): floor at the high-priority
-     threshold (added in v2).
+   * an official, active alert names the product **and** the pack's batch
+     (`PUBLISHED_ALERT`): floor at the high-priority threshold (opens a case);
+   * an official, active recall covers the pack's batch, or every batch (`RECALLED_BATCH`):
+     floor at the suspicious threshold; advice `DO_NOT_USE_RETURN` unless something else makes
+     the pack high priority;
+   * an official, active alert names the product but no batch (`ALERT_FOR_THIS_PRODUCT`): a
+     weighted signal; together with any other negative finding (another reason code) the floor
+     is the high-priority threshold, so a case opens.
 4. **Weighted signals.** Each available signal has a value in 0..1:
 
    `risk_score = min(1, max(floor, Σ weightᵢ × valueᵢ))` over available signals.
@@ -62,12 +67,14 @@ them.
 | `expiry_mismatch` | 0.35 | 1 when the printed expiry month differs from the declared one | `EXPIRY_MISMATCH` |
 | `batch_spread` | 0.40 | 0 up to `spread_state_limit` states within `spread_window_days`, then rising to 1 at twice the limit | `BATCH_SEEN_WIDELY` |
 | `outside_distribution` | 0.15 | 1 when the scan's state is not among the batch's declared distribution states | `OUTSIDE_DISTRIBUTION` |
-| `visual_mismatch` | 0.35 | 0 at cosine similarity ≥ 0.85 to the best **approved** reference image, 1 at ≤ 0.60, linear between | `VISUAL_MISMATCH` |
-| `counterfeit_alert` | 0.60 | 1 when an ingested alert or recall names the product (all batches) or its batch, else 0 | `PUBLISHED_ALERT` (also a hard rule) |
+| `visual_mismatch` | 0.35 | 0 at cosine similarity ≥ 0.85 to the best **approved** reference image embedded by the same model, 1 at ≤ 0.60, linear between | `VISUAL_MISMATCH` |
+| `counterfeit_alert` | 0.60 | 1 when an official, active alert names the product **and** the pack's batch | `PUBLISHED_ALERT` (hard rule: high priority) |
+| `product_alert` | 0.35 | 1 when an official, active alert names the product but no batch | `ALERT_FOR_THIS_PRODUCT` (high priority only with another finding) |
+| `recalled_batch` | 0.30 | 1 when an official, active recall covers the pack's batch (or every batch) | `RECALLED_BATCH` (hard rule: at least SUSPICIOUS) |
 
 A signal that cannot be computed is **unavailable**: it adds nothing to the risk and lowers
-confidence. For example, there are no reference images yet, the manufacturer declares no
-batches, or the batch number is unreadable. A registration that has merely lapsed is a weighted
+confidence. For example, there are no reference images yet (or, after an image model change,
+none re-embedded yet), the manufacturer declares no batches, or the batch number is unreadable. A registration that has merely lapsed is a weighted
 signal, not a hard rule: about a third of the Greenbook's registrations are past their expiry
 date while products stay on sale during renewal.
 
@@ -91,31 +98,42 @@ The same photo (SHA-256) from the same person or device within `duplicate_window
 the earlier scan. A near-identical photo (perceptual hash within 6 bits) gets the earlier
 answer too, so probing the checks with slightly edited photos teaches nothing.
 
-## Published alerts
+## Published alerts and recalls
 
 Alerts and recalls uploaded to the knowledge base (`POST /api/v1/knowledge/documents`, kind
-`alert` or `recall`) are chunked by the worker; every labelled NAFDAC number in a chunk becomes a
-published alert, paired with the labelled batch numbers in the same chunk (a chunk naming no
-batch flags every batch of the product). Batch values without a digit are ignored, so prose
-after the word "batch" is not mistaken for a batch number.
+`alert` or `recall`) are chunked by the worker; every labelled NAFDAC number in a chunk is
+paired with the labelled batch numbers in the same chunk (none: every batch). Batch values
+without a digit are ignored, so prose after the word "batch" is not mistaken for a batch
+number. Only documents marked `official` (a regulator vouches for the source) and `active`
+(not withdrawn) count; both flags are set on upload or with
+`PATCH /api/v1/knowledge/documents/{id}`, and every change is audited.
 
-## Cases and overrides
+## Cases and verdict decisions
 
 A SUSPICIOUS scan with high priority, or an UNREGISTERED scan, opens one review case. It goes to
 the active regulator whose jurisdiction covers the scan's state, preferring the most local one;
 without a state it goes to a national regulator. Lab results recorded on cases become labels:
 the training data for the next scorer.
 
-The pipeline's verdict is stored once and never changed. A reviewer recording a lab result may
-also set `override_verdict`: a counterfeit result allows SUSPICIOUS or UNREGISTERED, a genuine
-result allows LIKELY_GENUINE (never "safe"), an inconclusive one allows nothing. The override is
-what clients see as `verdict` (with `verdict_overridden: true`); regulators also see the
-pipeline's verdict (`analysis.pipeline_verdict`) and the deciding case. Every override is
-audited (`scan.verdict_overridden`). Hotspots and statistics count the verdict shown. Nothing
-else, including the assistant, can change a verdict.
+Each scan has two verdicts:
+
+* `pipeline_verdict`: the scorer's. Set once; a database trigger rejects any change.
+* `final_verdict`: what clients see. The pipeline's verdict, unless a case decision set it.
+
+Once a case has a lab result, a regulator who reviews cases (or a platform admin) may set the
+final verdict, with a required note: a counterfeit result allows SUSPICIOUS or UNREGISTERED, a
+genuine result allows LIKELY_GENUINE (never "safe"), an inconclusive one allows nothing
+(`POST /cases/{id}/lab-result` with `override_verdict`, or `POST /cases/{id}/override` later).
+The scan records who decided, when, the case, its lab result and the note; clients see
+`reviewed: true`. Decisions are audited (`scan.verdict_overridden`) and reversible with a note
+(`POST /cases/{id}/override/revert`, audited as `scan.verdict_override_reverted`). Hotspots,
+statistics and the manufacturer report count the final verdict; `GET /stats/accuracy` compares
+the pipeline's verdict with lab results, per scorer version. Nothing else, including the
+assistant, can change a verdict.
 
 ## Changes
 
-* **v2** (2026-11-03): published alerts are a hard rule (`PUBLISHED_ALERT`); the
-  `counterfeit_alert` signal is computed for every identified pack.
+* **v2** (2026-11-03, amended 2026-11-04 before release): official, active alerts and recalls
+  (`PUBLISHED_ALERT`, `ALERT_FOR_THIS_PRODUCT`, `RECALLED_BATCH`); a product name that could not
+  be read at all no longer counts as a mismatch.
 * **v1**: initial weights and rules.

@@ -14,6 +14,13 @@ dependencies = [
     "geoalchemy2>=0.20.0",
     "httpx>=0.28.1",
     "nh3>=0.3.7",
+    "opentelemetry-exporter-otlp-proto-http>=1.30",
+    "opentelemetry-instrumentation-celery>=0.51b0",
+    "opentelemetry-instrumentation-fastapi>=0.51b0",
+    "opentelemetry-instrumentation-httpx>=0.51b0",
+    "opentelemetry-instrumentation-redis>=0.51b0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.51b0",
+    "opentelemetry-sdk>=1.30",
     "pgvector>=0.5.1",
     "pillow>=13.0.0",
     "prometheus-client>=0.26.0",
@@ -30,6 +37,7 @@ dependencies = [
     # Security floor 0.0.18 (CVE-2024-53981, multipart DoS); never declare anything lower.
     "python-multipart>=0.0.33",
     "redis>=6.4.0",
+    "sentry-sdk[celery,fastapi]>=2.20",
     "sqlalchemy[asyncio]>=2.1.6",
     "structlog>=26.1.0",
     "tenacity>=9.2.1",
@@ -38,7 +46,9 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "bandit>=1.8",
     "mypy>=2.4.1",
+    "pip-audit>=2.7",
     "pre-commit>=4.7.0",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
@@ -55,11 +65,17 @@ vision = [
     "pytesseract>=0.3.13",
     "zxing-cpp>=3.1.1",
 ]
-# Embedding models and model-based scoring: large, worker image only (`make install-ml`).
+# What workers run: the models on ONNX Runtime, and model-based scoring. Worker image only.
 ml = [
     "lightgbm>=4.7.0",
     "onnxruntime>=1.31.1",
     "scikit-learn>=1.9.1",
+    "tokenizers>=0.21",
+]
+# Exporting the models to ONNX (scripts/export_onnx.py) and the torch fallback: needed while
+# building the worker image and for development (`make install-ml`), not in the image itself.
+ml-export = [
+    "onnx>=1.17",
     "sentence-transformers>=5.1.0",
     "torch>=2.8.0",  # CPU build, from the pytorch-cpu index below
 ]
@@ -127,7 +143,7 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 # No inline types or stubs in the allowed dependency list.
-module = ["celery.*", "aioboto3.*", "boto3.*", "botocore.*", "pytesseract.*", "sentence_transformers.*"]
+module = ["celery.*", "aioboto3.*", "boto3.*", "botocore.*", "onnxruntime.*", "pytesseract.*", "sentence_transformers.*"]
 ignore_missing_imports = true
 
 [tool.pydantic-mypy]
@@ -147,6 +163,11 @@ markers = [
     "integration: needs Docker; starts real services with testcontainers",
     "e2e: runs against a full docker compose stack",
 ]
+
+[tool.bandit]
+# `make audit` fails on medium and high findings. Low ones are mostly OpenAPI examples such as
+# "Bearer" (B105); real secrets are caught by detect-secrets in pre-commit.
+exclude_dirs = ["tests", "migrations", "scripts"]
 
 [tool.coverage.run]
 source = ["medlens"]

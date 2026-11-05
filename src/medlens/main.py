@@ -5,16 +5,19 @@ Containers:   uvicorn medlens.main:create_app --factory --host 0.0.0.0 --port 80
               (one process per container; no Gunicorn)
 """
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from functools import cache
 
 import structlog
 from fastapi import APIRouter, FastAPI
-from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_fastapi_instrumentator import Instrumentator, metrics
+from prometheus_fastapi_instrumentator.metrics import Info
 from starlette.middleware import Middleware
 from starlette.middleware.cors import CORSMiddleware
 
 from medlens import __version__
+from medlens.core import telemetry
 from medlens.core.bootstrap import configure_process
 from medlens.core.config import Settings, get_settings
 from medlens.core.devices import DEVICE_HEADER
@@ -56,6 +59,7 @@ from medlens.modules.rbac.router import router as admin_router
 from medlens.modules.reports.router import manufacturer_router, stats_router
 from medlens.modules.scans.router import router as scans_router
 from medlens.modules.users.router import router as users_router
+from medlens.queue.backpressure import QUEUES, SCANS_QUEUE, QueueDepth
 from medlens.resources import open_resources
 
 # Routers under /api/v1, each built with core.routing.api_v1_router() so it carries its full path.
@@ -91,7 +95,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with open_resources(settings) as resources:
         app.state.resources = resources
         monitor = (
-            start_monitor(readiness_service(resources, settings), interval_seconds=interval)
+            start_monitor(
+                readiness_service(resources, settings),
+                interval_seconds=interval,
+                queues=[resources.scan_queue]
+                + [
+                    QueueDepth(resources.broker_redis, name)
+                    for name in QUEUES
+                    if name != SCANS_QUEUE
+                ],
+            )
             if interval
             else None
         )
@@ -103,11 +116,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             if monitor is not None:
                 await stop_monitor(monitor)
             del app.state.resources
+            telemetry.flush()
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
-    configure_process(settings)
+    configure_process(settings, component="api")
 
     show_docs = settings.app.show_docs
     app = MedLensAPI(
@@ -124,10 +138,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     register_exception_handlers(app)
+    telemetry.instrument_app(app)
     # HTTP request metrics (served by the /metrics route below), by route template.
     Instrumentator(
         excluded_handlers=["/metrics", "/health/.*"], should_group_status_codes=False
-    ).instrument(app)
+    ).add(_http_metrics()).instrument(app)
 
     app.include_router(health_router)
     app.include_router(metrics_router)
@@ -135,6 +150,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     for router in API_V1_ROUTERS:
         app.include_router(router)
     return app
+
+
+@cache
+def _http_metrics() -> Callable[[Info], None]:
+    """Created once per process: the instrumentator skips metrics that already exist in the
+    registry, so a second app in the same process (tests) would otherwise record nothing."""
+    instrumentation = metrics.default()
+    if instrumentation is None:  # only if something else registered the same metrics first
+        raise RuntimeError("HTTP metrics are already registered in this process")
+    return instrumentation
 
 
 def _middleware(settings: Settings) -> list[Middleware]:

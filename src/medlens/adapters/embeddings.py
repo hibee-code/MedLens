@@ -5,6 +5,7 @@ Hugging Face hub into its cache. ``load`` takes the model name; tests pass a sta
 """
 
 import io
+import math
 from collections.abc import Callable, Sequence
 from typing import Any, Protocol
 
@@ -47,6 +48,12 @@ class SentenceTransformerImageEmbedder:
             raise ValueError(f"{self.model_version} returned {len(vector)} dimensions")
         return vector
 
+    def probe_dimension(self) -> int:
+        """The model's real output size (the configured one is checked against it)."""
+        blank = Image.new("RGB", (32, 32))
+        (vector,) = _rows(self._model.encode([blank], normalize_embeddings=True))
+        return len(vector)
+
 
 class SentenceTransformerTextEmbedder:
     """intfloat/multilingual-e5-small by default, which needs the e5 prefixes."""
@@ -67,8 +74,30 @@ class SentenceTransformerTextEmbedder:
     def embed_query(self, text: str) -> list[float]:
         return self._encode([f"query: {text}"])[0]
 
+    def probe_dimension(self) -> int:
+        return len(_rows(self._model.encode(["query: probe"], normalize_embeddings=True))[0])
+
     def _encode(self, texts: list[str]) -> list[list[float]]:
         vectors = _rows(self._model.encode(texts, normalize_embeddings=True, batch_size=32))
         if any(len(vector) != self._dimension for vector in vectors):
             raise ValueError(f"{self.model_version} returned the wrong dimension")
         return vectors
+
+
+class SentenceTransformerReranker:
+    """RerankPort with sentence-transformers' CrossEncoder (the torch fallback)."""
+
+    def __init__(self, model_name: str, load: Callable[[str], Any] | None = None) -> None:
+        if load is None:
+            from sentence_transformers import CrossEncoder  # heavy: imported on use
+
+            self._model = CrossEncoder(model_name, device="cpu")
+        else:
+            self._model = load(model_name)
+        self.model_version = model_name
+
+    def rerank(self, query: str, passages: Sequence[str]) -> list[float]:
+        if not passages:
+            return []
+        scores = self._model.predict([(query, passage) for passage in passages])
+        return [round(1.0 / (1.0 + math.exp(-float(score))), 6) for score in scores]

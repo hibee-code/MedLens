@@ -420,7 +420,7 @@ Newest last. Each entry overrides the phase prompts and anything above that it c
   Revisit when: never for the MVP; later phases follow the main plan.
   Decided by: owner.
 
-2026-11-03 MVP model and reader stack
+2026-11-03 MVP model and reader stack (amended by "Models on ONNX Runtime" below)
   Decision: image embeddings are clip-ViT-B-32 (512-d) and text embeddings multilingual-e5-small (384-d), both through sentence-transformers on CPU torch (pytorch-cpu index) in the worker-only ml group; OCR is Tesseract (pytesseract, apt tesseract-ocr in the worker image) and is optional at run time; paddleocr moved to its own ocr-benchmark group, out of every image. Dimensions are settings read by migrations; migration 0012 resizes reference_images.embedding to the configured dimension and clears old vectors.
   Why: sentence-transformers loads both models with one dependency and no export step; the CPU wheel keeps the worker image far smaller than CUDA torch.
   Alternatives rejected: ONNX Runtime exports now (an export and parity check per model before any measurement); DINOv2 (no text tower if CLIP text search is wanted later); PaddleOCR in the worker (blocked by the OCR decision above).
@@ -448,19 +448,19 @@ Newest last. Each entry overrides the phase prompts and anything above that it c
   Revisit when: regulators need the case visible at the same instant as the verdict.
   Decided by: agent-proposed, awaiting owner review.
 
-2026-11-03 Verdict overrides (amends "Scoring v1 and case routing")
-  Decision: a lab result recorded on a case may set override_verdict (counterfeit: SUSPICIOUS or UNREGISTERED; genuine: LIKELY_GENUINE; inconclusive: none). The pipeline's verdict stays stored; scans.verdict_override is what clients see, with verdict_overridden; regulators also see the pipeline's verdict and the case. Every override is audited (scan.verdict_overridden). Hotspots, statistics and reports count the verdict shown.
-  Why: M4 requires that only a case decision overrides a verdict; keeping both values keeps the scorer's output auditable and re-scorable.
-  Alternatives rejected: overwriting scans.verdict (loses the scorer's output); overrides without a lab result (no evidence behind them).
+2026-11-03 Verdict overrides (amends "Scoring v1 and case routing"; accepted with amendments 2026-11-04)
+  Decision: scans keep pipeline_verdict (the scorer's, immutable once set: a database trigger rejects changes) and final_verdict (what clients see). A case decision may set final_verdict once the case has a lab result: counterfeit allows SUSPICIOUS or UNREGISTERED, genuine allows LIKELY_GENUINE, inconclusive nothing. Every override records overridden_by, overridden_at, override_case_id, override_lab_result and a required override_note (a check constraint enforces it), is audited (scan.verdict_overridden) and is reversible with a note (POST /cases/{id}/override/revert, audited as scan.verdict_override_reverted). Only regulators who review cases and platform admins may override. API responses show final_verdict and reviewed; regulators also see the pipeline verdict and the override details. Hotspots, statistics and the manufacturer report use final_verdict; GET /stats/accuracy compares pipeline_verdict with lab labels per scorer version.
+  Why: only a human decision backed by a lab result may change what clients see, and the scorer's own output must stay measurable against those results.
+  Alternatives rejected: overwriting the scorer's verdict (no accuracy measurement); overrides without a lab result or a note (no evidence or reason); irreversible overrides.
   Revisit when: overrides need a second reviewer.
-  Decided by: agent-proposed, awaiting owner review.
+  Decided by: agent-proposed, owner-approved with amendments.
 
-2026-11-03 Scorer v2: published alerts
-  Decision: weighted-rules-v2 adds one hard rule: a published alert or recall naming the product (all batches) or the pack's batch makes it SUSPICIOUS with high priority (reason PUBLISHED_ALERT). Alerts come from documents of kind alert or recall: labelled NAFDAC numbers paired with the labelled batch numbers (containing a digit) in the same chunk.
-  Why: M5 requires it; high priority routes the scan to a regulator.
-  Alternatives rejected: a weighted signal only (an alert is direct evidence).
+2026-11-03 Scorer v2: official alerts and recalls (accepted with amendments 2026-11-04)
+  Decision: only documents of kind alert or recall that are official (a regulator vouches for the source) and active (not withdrawn) trigger these rules; both flags are set on upload or with PATCH /knowledge/documents/{id}, audited. An alert naming the product and the pack's batch is a hard rule: SUSPICIOUS, high priority, opens a case (PUBLISHED_ALERT). An alert naming the product only raises risk (signal product_alert, weight 0.35, reason ALERT_FOR_THIS_PRODUCT) and makes the pack high priority, opening a case, only together with another negative finding. A recall covering the batch (or every batch) makes a genuine pack SUSPICIOUS (RECALLED_BATCH) with advice DO_NOT_USE_RETURN and opens no case by itself. Notices are matched from labelled NAFDAC numbers and labelled batch numbers containing a digit in the same chunk. The scorer stays weighted-rules-v2 (amended before release).
+  Why: a product-wide alert is weaker evidence than one naming the batch; a recall is a quality problem, not counterfeiting; unofficial or withdrawn notices must not flag packs.
+  Alternatives rejected: every alert as a hard rule (product-wide alerts would flag every genuine pack of the brand); recalls as counterfeit cases.
   Revisit when: alerts produce false matches (then require a reviewer to confirm extracted alerts).
-  Decided by: agent-proposed, awaiting owner review.
+  Decided by: agent-proposed, owner-approved with amendments.
 
 2026-11-03 Knowledge ingestion and search
   Decision: uploads are stored and ingested by a Celery task (outbox event knowledge.document_uploaded) on the ml.embed queue, not a FastAPI BackgroundTask; the API gets question embeddings from a worker (task medlens.knowledge.embed_query, result backend, 5 s timeout) and searches on keywords and NAFDAC numbers alone when that fails; chunks without vectors (no model, seeded documents) are embedded by an hourly backfill. Documents are professional or regulator-only. PDFs with scripts, attachments or forms are refused; scanned PDFs without a text layer fail as unreadable (no OCR for documents yet).
@@ -481,4 +481,75 @@ Newest last. Each entry overrides the phase prompts and anything above that it c
   Why: clients translate stable codes (§1); the codes were already documented and tested.
   Alternatives rejected: renaming codes for the MVP.
   Revisit when: a client integration needs different codes (add aliases, never rename).
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 Worker image and concurrency (amended by "Models on ONNX Runtime" below)
+  Decision: the worker image downloads the embedding models at build time (HF_HOME=/opt/models) and runs offline (HF_HUB_OFFLINE); workers check at start that each model's output fits the configured vector dimension and run without a model that does not. Each worker container runs MEDLENS_QUEUE__WORKER_CONCURRENCY=2 pool processes, each loading both models (about 1 GB).
+  Why: demos and deployments must not download about 1 GB at start; one process per CPU would exhaust memory.
+  Alternatives rejected: downloading on first use; Celery's default concurrency.
+  Revisit when: scaling out: load the image model only in scan workers and the text model only in ingestion workers.
+  Decided by: owner.
+
+2026-11-04 An unread product name is no evidence
+  Decision: when none of the registered brand name's words are found on the pack, the name_mismatch signal is unavailable (it lowers confidence) instead of a full mismatch; a partly read or misspelt name still scores as a mismatch. Tesseract also reads the inverted image, since packs often print names light on dark.
+  Why: the first run on the real stack flagged a genuine pack SUSPICIOUS only because OCR could not read its white-on-blue name.
+  Alternatives rejected: keeping a missing name as a mismatch (false positives on stylised packs).
+  Revisit when: the OCR benchmark measures how often names are missed versus misspelt on counterfeits.
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 Bounded Redis retries
+  Decision: every Redis client (API, workers, rate limits, revocation, caches) uses a 1 s socket timeout, a 0.5 s connect timeout and one retry with jittered exponential backoff (10-100 ms) on connection errors and timeouts only (MEDLENS_REDIS__RETRIES).
+  Why: redis-py 8 retries 10 times by default; during an outage each call took about 3.3 s before the fail-open rules applied, so a Redis outage became an API outage in practice. Now a failed call costs about 20 ms.
+  Alternatives rejected: the library default (seconds per call during an outage); no retries (a single dropped connection fails a request).
+  Revisit when: Redis becomes highly available behind a proxy that needs longer failovers.
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 Tracing and error reporting
+  Decision: OpenTelemetry tracing is on only when MEDLENS_OBSERVABILITY__OTLP_ENDPOINT is set (OTLP/HTTP, parent-based ratio sampling, 0.1 by default) and instruments FastAPI, SQLAlchemy, Redis, httpx and Celery; log lines carry trace_id and span_id. Sentry is on only with MEDLENS_OBSERVABILITY__SENTRY_DSN, for errors only (traces_sample_rate 0), with send_default_pii off, no request bodies and no local variables.
+  Why: §2 requires both; health data and phone numbers must not leave in error reports.
+  Alternatives rejected: Sentry performance tracing (two tracing systems); default Sentry settings (request bodies and local variables can hold personal data).
+  Revisit when: a hosted tracing backend is chosen (sampling and retention).
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 Models on ONNX Runtime
+  Decision: the worker image runs its three models on ONNX Runtime without torch: CLIP ViT-B/32 image tower (fp32), multilingual-e5-small (dynamic int8) and the reranker (fp32). A `models` build stage exports them with scripts/export_onnx.py and checks parity through the runtime adapters (text cosine >= 0.98, image >= 0.99, reranker score difference <= 0.01; measured 0.986, 0.998 and 0.0); a failed check fails the build. Dependency groups: `ml` (onnxruntime, tokenizers, LightGBM, scikit-learn; worker image) and `ml-export` (torch CPU, sentence-transformers, onnx; export stage and development only). Exports report their own model versions (clip-ViT-B-32@onnx, ...@onnx-int8): their vectors differ slightly from torch's, so the backfill re-embeds, and visual matching compares a scan only with reference images of the same model version. ONNX Runtime's telemetry is off (ORT_DISABLE_TELEMETRY). MEDLENS_EMBEDDINGS__ONNX_MEMORY_ARENA (default on) trades memory for speed: measured per pool process after a large batch, about 1.9 GB and fastest with it on, 0.9 GB and 50-60% slower off. sentence-transformers remains the fallback when the exports are missing (development).
+  Why: the worker image drops torch (2.49 GB in total with models and Tesseract) and starts offline; e5 int8 keeps 0.986 cosine at a quarter of the size; CLIP and the reranker lose too much under int8.
+  Alternatives rejected: torch in the worker image (the previous design: larger image); int8 for every model (reranker scores drifted by up to 0.17); exporting at first start (network at start-up, unverified exports).
+  Revisit when: GPU inference or a larger model is needed; or memory per process matters more than latency (turn the arena off by default).
+  Decided by: agent-proposed, awaiting owner review. New dependencies outside the §2 list, awaiting owner approval: onnx (ml-export; needed by the exporter and int8 quantisation) and tokenizers (ml; previously only indirect through sentence-transformers).
+
+2026-11-04 Reranker
+  Decision: cross-encoder/ms-marco-MiniLM-L-6-v2 (23M parameters, fp32 ONNX) reranks the top 20 fused results (MEDLENS_KNOWLEDGE__RERANK_CANDIDATES) in a worker (task medlens.knowledge.rerank, 5 s timeout) instead of bge-reranker-base. Without a worker answer, results keep the fused order and say reranked: false.
+  Why: on six hand-written question-passage pairs (three relevant), MiniLM scored two relevant pairs 0.997 and 0.999 and every irrelevant one 0.008 or lower; bge-reranker-base scored the same two 0.09 and 0.19, its int8 export drifted by up to 0.17, and it needs about 12 times the memory. Notices and SOPs are in English. Known weakness: all three models missed the third relevant pair, a how-to question answered by a procedure (MiniLM 0.000, bge 0.002, mxbai 0.054); MS MARCO models favour factoid answers.
+  Alternatives rejected: bge-reranker-base (above); mxbai-rerank-xsmall-v1 (weaker separation: 0.50 and 0.76 for the relevant pairs, up to 0.12 for irrelevant ones); no reranker.
+  Evidence bar: with reranked results, the assistant gives the model only passages scoring at least MEDLENS_KNOWLEDGE__MIN_RERANK_SCORE (0.1) or naming the asked NAFDAC number, and answers weak_evidence without a model call when none qualify. On seed/eval_questions.csv the best passage of every answerable question scored 0.96 or more and of every unanswerable one 0.02 or less, while cosine similarity put both at 0.80-0.92; abstain accuracy went from 1/3 (vectors on, no bar) to 3/3, with answerable questions still 7/7.
+  Revisit when: the assistant eval on real questions (seed/eval_questions.csv is small and synthetic) shows procedural questions losing their passages or the bar misplaced; documents in other languages are ingested (a multilingual reranker such as bge-reranker-v2-m3).
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 Caches
+  Decision: three cache-aside caches in Redis, each skipped when Redis fails. Product facts in the worker for 60 s (MEDLENS_VERIFICATION__PRODUCT_CACHE_SECONDS), including "not registered", without invalidation. Question embeddings for a day, keyed by model and text. Assistant answers for an hour (MEDLENS_LLM__ANSWER_CACHE_SECONDS), only on routes marked cacheable (the assistant), keyed by model, prompt version, output schema, token limit and the exact messages, so new documents or a new prompt version miss; kill switch and feature flag are checked before the cache, budgets after it, and hits are counted but not metered as calls.
+  Why: register lookups dominate scan database load; repeated questions should not cost model calls.
+  Alternatives rejected: invalidation of product facts on change (a register change reaches scoring within a minute anyway); caching the vision LLM's readings (each photo differs); caching answers per user (answers depend only on the question and the retrieved documents, never on the asker).
+  Revisit when: product status changes must apply instantly (publish an invalidation from the products module), or answers start depending on the asker's organization.
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 Assistant streaming
+  Decision: POST /api/v1/assistant/ask/stream answers with server-sent events: status events (searching, retrieved, generating, checking_citations, retrying), keepalive comments every 10 s, then one answer event (the same body as POST /assistant/ask) or one error event (problem+json). Answer text is not streamed token by token.
+  Why: "grounded or silent" (§5): citations are checked after generation, and an answer that fails the check is withheld, so no text may reach the client before the check.
+  Alternatives rejected: token streaming (text the citation check would later withdraw); no streaming (clients wait 5-15 s with no feedback).
+  Revisit when: citations can be checked incrementally, sentence by sentence.
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 Synthetic reference images in the seed
+  Decision: the seed stores five drawn reference packs (seed/reference_images, from scripts/make_test_packs.py) in object storage and registers them as approved by the seeded platform admin, so the visual signal works end to end in local and demo stacks. The seed refuses staging and production databases. `--no-images` skips them.
+  Why: without approved reference images the visual signal is always unavailable and its code path is never exercised outside tests.
+  Alternatives rejected: approving reference images by hand after seeding (demos would skip it); real pack photos in Git (rights unclear).
+  Revisit when: manufacturers upload real reference images.
+  Decided by: agent-proposed, awaiting owner review.
+
+2026-11-04 CI and audit
+  Decision: GitHub Actions runs lint and types; the tests with coverage (with the `ml` group, so the ONNX adapters run against tiny fixture models in tests/fixtures/onnx); `make audit` (pip-audit on the exported lock file with local version suffixes such as +cpu stripped, and bandit on src at medium severity and above, excluding tests, migrations and scripts); the scan eval, failing below 90% accuracy; and both image builds. Tests ignore the developer's .env (settings come only from the test fixtures). Alerts in docker/observability/alerts.yml and the Grafana dashboard (generated by scripts/make_dashboard.py) cover Redis, revocation checks, scan backlog, latency and failures, dead letters, failed tasks, LLM budget and errors, and HTTP 5xx.
+  Why: the Definition of Done, enforced on every push instead of by memory.
+  Alternatives rejected: bandit at low severity (dozens of false positives on OpenAPI examples); pip-audit resolving the environment itself (it cannot resolve the CPU torch wheel).
+  Revisit when: the suite is split across jobs (combine coverage), or images are pushed to a registry (add image scanning).
   Decided by: agent-proposed, awaiting owner review.

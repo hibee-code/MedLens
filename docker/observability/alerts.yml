@@ -29,3 +29,122 @@ groups:
             revocation in Redis. Consumer actions failed open; privileged sessions were checked in
             Postgres (medlens_auth_revocation_fallbacks_total). Usually accompanies
             MedLensRedisDown.
+
+  - name: medlens-scans
+    rules:
+      - alert: MedLensScanQueueBacklog
+        expr: max(medlens_queue_depth{queue="scans.pipeline"}) > 200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanize }} scans are waiting for a worker"
+          description: >-
+            Above MEDLENS_QUEUE__SCANS_SOFT_LIMIT the API stops the sync fast path and quotes
+            longer waits. Add worker containers or check that workers are consuming
+            scans.pipeline.
+      - alert: MedLensScanQueueFull
+        expr: max(medlens_queue_depth{queue="scans.pipeline"}) > 2000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The scan queue is full: new scans get 503"
+          description: >-
+            Above MEDLENS_QUEUE__SCANS_HARD_LIMIT POST /scans answers 503 with Retry-After.
+            Scale workers now.
+      - alert: MedLensScansSlow
+        expr: >-
+          histogram_quantile(0.95, sum by (le) (rate(medlens_scan_duration_seconds_bucket[10m])))
+          > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "95% of scans take more than {{ $value | humanize }}s in the worker"
+          description: >-
+            Look at medlens_scan_stage_duration_seconds for the slow stage (OCR, the vision LLM
+            or the visual match) and at worker CPU.
+      - alert: MedLensScansFailing
+        expr: >-
+          sum(rate(medlens_scans_total{outcome="failed"}[15m]))
+          / sum(rate(medlens_scans_total[15m])) > 0.05
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of scans fail"
+          description: >-
+            Failed scans get no verdict (missing photos, pipeline errors, retries exhausted).
+            Check the worker logs and failed_tasks (GET /api/v1/admin/failed-tasks).
+
+  - name: medlens-queue
+    rules:
+      - alert: MedLensOutboxDeadLetters
+        expr: sum(increase(medlens_outbox_dead_lettered_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "Outbox events were dead-lettered"
+          description: >-
+            Events that failed MEDLENS_QUEUE__RELAY_MAX_ATTEMPTS times were given up on: their
+            side effects (scan processing, cases, embeddings) did not happen. Usually the broker
+            was unreachable; inspect outbox_events where dead_lettered_at is set.
+      - alert: MedLensTasksFailing
+        expr: sum by (task) (increase(medlens_tasks_failed_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.task }} failed for good"
+          description: >-
+            Retries were exhausted. Failures are listed and can be requeued by platform admins
+            (GET /api/v1/admin/failed-tasks).
+
+  - name: medlens-ai
+    rules:
+      - alert: MedLensLLMBudgetNearlySpent
+        expr: max(medlens_llm_spent_today_usd) / max(medlens_llm_daily_budget_usd) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of today's model budget is spent"
+          description: >-
+            At 100% the gateway stops calling models until 00:00 UTC: scans still get verdicts
+            and the assistant returns search results. Raise MEDLENS_LLM__DAILY_BUDGET_USD only
+            after checking GET /api/v1/admin/ai/usage.
+      - alert: MedLensLLMBudgetSpent
+        expr: max(medlens_llm_spent_today_usd) >= max(medlens_llm_daily_budget_usd)
+        labels:
+          severity: warning
+        annotations:
+          summary: "Today's model budget is spent: AI features are off until 00:00 UTC"
+          description: >-
+            Scans continue without the vision LLM and the assistant answers in degraded mode.
+      - alert: MedLensLLMErrors
+        expr: >-
+          sum(rate(medlens_llm_calls_total{outcome=~"error|invalid_output"}[10m]))
+          / sum(rate(medlens_llm_calls_total{outcome!="blocked"}[10m])) > 0.2
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of model calls fail"
+          description: >-
+            Provider errors or output that does not validate. The circuit breaker opens after
+            repeated errors; check the provider's status and the llm_calls table.
+
+  - name: medlens-http
+    rules:
+      - alert: MedLensHTTPErrors
+        expr: >-
+          sum(rate(http_requests_total{status=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m])) > 0.02
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value | humanizePercentage }} of API requests fail with 5xx"
+          description: >-
+            Quote a request_id from the logs to find the error (and its trace, when tracing is
+            on). medlens_dependency_up shows whether a dependency is down.

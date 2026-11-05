@@ -31,3 +31,6 @@ data/
 
 # Demo state (scripts/demo.sh): staff password and authenticator secrets
 .demo/
+
+# ONNX exports from `make onnx` (the worker image builds its own)
+/models/

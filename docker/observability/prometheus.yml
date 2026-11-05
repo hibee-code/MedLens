@@ -1,5 +1,6 @@
-# Prometheus for docker compose (profile: observability). Worker targets and dashboards are
-# added in Phase 10. Alerts appear under Status > Alerts; no Alertmanager is wired up locally.
+# Prometheus for docker compose (profile: observability): the API, the workers (all pool processes,
+# port 9100) and the collector. Alerts (alerts.yml) appear under Status > Alerts; no Alertmanager
+# is wired up locally. Grafana provisions the MedLens dashboard (scripts/make_dashboard.py).
 global:
   scrape_interval: 15s
   evaluation_interval: 15s

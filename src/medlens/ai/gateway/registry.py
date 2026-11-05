@@ -20,6 +20,7 @@ class Route:
     version: str
     max_tokens: int
     effort: str  # output_config.effort: low | medium | high
+    cacheable: bool = False  # identical requests may reuse a validated answer (gateway cache)
 
     @property
     def prompt_version(self) -> str:
@@ -32,7 +33,7 @@ ROUTES: dict[str, Route] = {
         # Reading fields off a pack photo: short structured output, cheapest tier.
         Route("pack_extraction", Tier.FAST, "pack_extraction", "v1", 2048, "low"),
         # Grounded answers with citations for professional users.
-        Route("assistant_answer", Tier.BALANCED, "assistant_answer", "v1", 8000, "medium"),
+        Route("assistant_answer", Tier.BALANCED, "assistant_answer", "v1", 8000, "medium", True),
     )
 }
 

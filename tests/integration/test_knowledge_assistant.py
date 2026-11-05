@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import select
 
+from medlens.adapters.fakes import AsyncFakeReranker
 from medlens.modules.knowledge.models import KnowledgeChunk, PublishedAlert
 from medlens.modules.organizations.models import Organization, OrganizationType
 from medlens.modules.rbac.models import RoleName
@@ -53,6 +54,7 @@ async def upload(
     visibility: str = "professional",
     title: str | None = None,
     media_type: str = "application/pdf",
+    official: bool = False,
 ) -> dict[str, Any]:
     response = await api.client.post(
         "/api/v1/knowledge/documents",
@@ -62,6 +64,7 @@ async def upload(
             "kind": kind,
             "visibility": visibility,
             "published_on": "2026-10-14",
+            "official": str(official).lower(),
         },
         headers=headers,
     )
@@ -328,28 +331,180 @@ async def test_consumers_cannot_ask(api: Api) -> None:
 
 
 # ------------------------------------------------------------------------- the scan signal
-async def test_a_scan_matching_a_published_alert_is_suspicious(api: Api) -> None:
-    user, organization = await regulator(api)
-    headers = api.bearer(api.token(user, organization=organization))
-    product = await api.create_product(brand="Alertamol Forte")
-    batch = f"AL{uuid4().hex[:6].upper()}9"
-    document = await upload(api, headers, alert_pdf(product.nafdac_number, batch, "Alertamol"))
-    api.ingest(document["id"])
-    device = {"X-Device-Id": f"device-{uuid4().hex}"}
+async def scan_pack(api: Api, text: str, headers: dict[str, str]) -> dict[str, Any]:
     submitted = await api.client.post(
         "/api/v1/scans",
         files={"image": ("pack.jpg", photo(), "image/jpeg")},
-        headers=device,
+        headers={"X-Device-Id": f"device-{uuid4().hex}"},
     )
     scan_id = UUID(submitted.json()["id"])
+    api.worker(text=text).process_scan(scan_id)
+    response = await api.client.get(f"/api/v1/scans/{scan_id}", headers=headers)
+    return dict(response.json())
 
-    api.worker(
-        text=f"Alertamol Forte NAFDAC REG NO: {product.nafdac_number} BATCH NO: {batch}"
-    ).process_scan(scan_id)
-    result = (await api.client.get(f"/api/v1/scans/{scan_id}", headers=headers)).json()
 
-    assert result["verdict"] == "SUSPICIOUS"
+async def notice_for(
+    api: Api, headers: dict[str, str], *, kind: str = "alert", batch: str | None, official: bool
+) -> tuple[str, str]:
+    """A product, and an indexed notice of ``kind`` naming it (and ``batch``)."""
+    product = await api.create_product(brand="Alertamol Forte")
+    lines = [
+        f"NAFDAC {kind}: Alertamol Forte",
+        f"Product name: Alertamol Forte. NAFDAC Reg. No: {product.nafdac_number}."
+        + (f" Batch No: {batch}." if batch else ""),
+    ]
+    document = await upload(api, headers, simple_pdf([lines]), kind=kind, official=official)
+    assert api.ingest(document["id"]) == "indexed"
+    return product.nafdac_number, document["id"]
+
+
+async def test_an_official_alert_for_the_batch_makes_a_scan_suspicious(api: Api) -> None:
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    batch = f"AL{uuid4().hex[:6].upper()}9"
+    number, document_id = await notice_for(api, headers, batch=batch, official=True)
+
+    result = await scan_pack(
+        api, f"Alertamol Forte NAFDAC REG NO: {number} BATCH NO: {batch}", headers
+    )
+
+    assert result["final_verdict"] == "SUSPICIOUS"
     assert "PUBLISHED_ALERT" in result["reason_codes"]
+    assert result["analysis"]["signals"]["high_priority"] is True  # opens a case
     signal = result["analysis"]["signals"]["signals"]["counterfeit_alert"]
     assert signal["value"] == 1.0
-    assert signal["document_id"] == document["id"]
+    assert signal["documents"] == [document_id]
+
+
+async def test_unofficial_or_withdrawn_alerts_flag_nothing(api: Api) -> None:
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    batch = f"AL{uuid4().hex[:6].upper()}8"
+    number, document_id = await notice_for(api, headers, batch=batch, official=False)
+    text = f"Alertamol Forte NAFDAC REG NO: {number} BATCH NO: {batch}"
+
+    unofficial = await scan_pack(api, text, headers)
+    marked = await api.client.patch(
+        f"/api/v1/knowledge/documents/{document_id}", json={"official": True}, headers=headers
+    )
+    official = await scan_pack(api, text, headers)
+    withdrawn = await api.client.patch(
+        f"/api/v1/knowledge/documents/{document_id}", json={"active": False}, headers=headers
+    )
+    inactive = await scan_pack(api, text, headers)
+
+    assert unofficial["final_verdict"] == "LIKELY_GENUINE"
+    assert marked.json()["official"] is True
+    assert official["final_verdict"] == "SUSPICIOUS"
+    assert withdrawn.json()["active"] is False
+    assert inactive["final_verdict"] == "LIKELY_GENUINE"
+    assert "knowledge.document_updated" in await api.audit_actions(user.id)
+
+
+async def test_a_product_only_alert_raises_risk_without_a_case(api: Api) -> None:
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    number, _ = await notice_for(api, headers, batch=None, official=True)
+
+    result = await scan_pack(api, f"Alertamol Forte NAFDAC REG NO: {number}", headers)
+
+    assert result["final_verdict"] == "SUSPICIOUS"
+    assert result["reason_codes"] == ["ALERT_FOR_THIS_PRODUCT"]
+    assert result["analysis"]["signals"]["high_priority"] is False
+
+
+async def test_a_recalled_batch_gets_return_advice(api: Api) -> None:
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    batch = f"RC{uuid4().hex[:6].upper()}7"
+    number, _ = await notice_for(api, headers, kind="recall", batch=batch, official=True)
+
+    result = await scan_pack(
+        api, f"Alertamol Forte NAFDAC REG NO: {number} BATCH NO: {batch}", headers
+    )
+
+    assert result["final_verdict"] == "SUSPICIOUS"
+    assert result["reason_codes"] == ["RECALLED_BATCH"]
+    assert result["advice_codes"][0] == "DO_NOT_USE_RETURN"
+
+
+# ------------------------------------------------------------------------- reranking and streaming
+async def test_search_results_are_reranked_by_the_cross_encoder(api: Api) -> None:
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    number = f"Z9-{uuid4().int % 900000 + 100000}"
+    sections = [
+        f"## Summary\n\nCounterfeit packs carry NAFDAC Reg. No: {number} in Kano.",
+        f"## Storage\n\nGenuine packs of NAFDAC Reg. No: {number} are stored below 30 degrees.",
+        f"## Advice\n\nPharmacists should quarantine packs with NAFDAC Reg. No: {number}.",
+    ]
+    document = await upload(
+        api,
+        headers,
+        ("# Alert\n\n" + "\n\n".join(sections)).encode(),
+        media_type="text/markdown",
+    )
+    assert api.ingest(document["id"]) == "indexed"
+
+    response = await api.client.get(
+        "/api/v1/knowledge/search", params={"q": f"quarantine {number}"}, headers=headers
+    )
+
+    body = response.json()
+    assert body["reranked"] is True
+    scores = [result["rerank_score"] for result in body["results"]]
+    assert len(scores) >= 3
+    assert scores == sorted(scores, reverse=True)
+    assert "quarantine" in body["results"][0]["text"]  # the fake reranker's best word match
+
+
+async def test_search_keeps_the_fused_order_without_the_reranker(api: Api) -> None:
+    from medlens.modules.knowledge.router import get_reranker
+
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    _, number, _ = await indexed_alert(api, headers)
+    api.app.dependency_overrides[get_reranker] = lambda: AsyncFakeReranker(available=False)
+
+    response = await api.client.get(
+        "/api/v1/knowledge/search", params={"q": f"alert {number}"}, headers=headers
+    )
+
+    body = response.json()
+    assert body["reranked"] is False
+    assert all(result["rerank_score"] is None for result in body["results"])
+
+
+def sse_events(text: str) -> list[tuple[str, dict[str, Any]]]:
+    events = []
+    for block in text.strip().split("\n\n"):
+        lines = [line for line in block.split("\n") if not line.startswith(":")]
+        if lines:
+            events.append(
+                (lines[0].removeprefix("event: "), json.loads(lines[1].removeprefix("data: ")))
+            )
+    return events
+
+
+async def test_the_answer_streams_its_progress(api: Api) -> None:
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    _, number, batch = await indexed_alert(api, headers)
+    chunk = await chunk_for(api, headers, number)
+    api.use_llm(answer(chunk["chunk_id"], f"Batch No: {batch}"))
+
+    response = await api.client.post(
+        "/api/v1/assistant/ask/stream",
+        json={"question": f"Which batch of {number} is counterfeit?"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    events = sse_events(response.text)
+    stages = [data["stage"] for name, data in events if name == "status"]
+    assert stages == ["searching", "retrieved", "generating", "checking_citations"]
+    name, final = events[-1]
+    assert name == "answer"
+    assert final["outcome"] == "answered"
+    assert final["citations"][0]["chunk_id"] == chunk["chunk_id"]

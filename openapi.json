@@ -5895,8 +5895,10 @@
                   "type": "null"
                 }
               ],
+              "description": "The final verdict.",
               "title": "Verdict"
-            }
+            },
+            "description": "The final verdict."
           },
           {
             "name": "status",
@@ -7097,6 +7099,310 @@
         }
       }
     },
+    "/api/v1/cases/{case_id}/override": {
+      "post": {
+        "tags": [
+          "cases"
+        ],
+        "summary": "Decide the scan's final verdict",
+        "description": "After the lab result, sets (or changes) the final verdict clients see, with a required note: counterfeit allows SUSPICIOUS or UNREGISTERED, genuine allows LIKELY_GENUINE. Also on resolved cases. The pipeline's verdict is kept; the decision is audited and can be reverted. Regulators and platform admins only.",
+        "operationId": "cases-override_verdict",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Case Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerdictOverride"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/cases/{case_id}/override/revert": {
+      "post": {
+        "tags": [
+          "cases"
+        ],
+        "summary": "Revert a verdict decision",
+        "description": "Returns the scan to the pipeline's verdict, with a required note. The reverted decision stays in the audit log. Regulators and platform admins only.",
+        "operationId": "cases-revert_override",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "case_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Case Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OverrideRevert"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaseRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/cases/{case_id}/image": {
       "get": {
         "tags": [
@@ -7482,6 +7788,114 @@
         }
       }
     },
+    "/api/v1/stats/accuracy": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "Pipeline accuracy against lab results",
+        "description": "Compares the pipeline's verdict (never the final, reviewed one) with the lab results recorded on cases in the last `days`, per scorer version: precision, recall and agreement. Regulators see scans in their jurisdiction; platform admins see all.",
+        "operationId": "reports-accuracy",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 3650,
+              "minimum": 1,
+              "default": 365,
+              "title": "Days"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccuracyReport"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/manufacturer/scans": {
       "get": {
         "tags": [
@@ -7615,7 +8029,7 @@
           "knowledge"
         ],
         "summary": "Add a document to the knowledge base",
-        "description": "Uploads a PDF, plain-text or Markdown document (up to MEDLENS_KNOWLEDGE__MAX_DOCUMENT_BYTES; the real type is checked by content, and PDFs with scripts, attachments or forms are refused). A worker extracts the text, skips it if the same text is already indexed, removes personal data, chunks it, embeds the chunks and, for alerts and recalls, records the NAFDAC numbers and batches they name: scans of those packs become SUSPICIOUS. Poll GET /knowledge/documents/{id} for the status.",
+        "description": "Uploads a PDF, plain-text or Markdown document (up to MEDLENS_KNOWLEDGE__MAX_DOCUMENT_BYTES; the real type is checked by content, and PDFs with scripts, attachments or forms are refused). A worker extracts the text, skips it if the same text is already indexed, removes personal data, chunks it, embeds the chunks and, for alerts and recalls, records the NAFDAC numbers and batches they name. Only `official`, `active` alerts and recalls flag scans (docs/scoring.md). Poll GET /knowledge/documents/{id} for the status.",
         "operationId": "knowledge-upload_document",
         "security": [
           {
@@ -7909,6 +8323,138 @@
       }
     },
     "/api/v1/knowledge/documents/{document_id}": {
+      "patch": {
+        "tags": [
+          "knowledge"
+        ],
+        "summary": "Mark a document official or withdraw it",
+        "description": "Sets `official` (a regulator vouches for the source) and/or `active` (false withdraws it). Official, active alerts and recalls flag scans of the products they name, so every change is audited.",
+        "operationId": "knowledge-update_document",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "document_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Document Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DocumentUpdate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DocumentRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
       "get": {
         "tags": [
           "knowledge"
@@ -8038,7 +8584,7 @@
           "knowledge"
         ],
         "summary": "Search the knowledge base",
-        "description": "Hybrid search without any model call: vector similarity, full-text search and exact NAFDAC numbers, fused with Reciprocal Rank Fusion. Results must clear an evidence bar (a matching NAFDAC number, the question's words, or close semantic similarity); an empty list means there is no evidence.",
+        "description": "Hybrid search without any generative model: vector similarity, full-text search and exact NAFDAC numbers, fused with Reciprocal Rank Fusion, then re-ordered by a cross-encoder. Results must clear an evidence bar (a matching NAFDAC number, the question's words, or close semantic similarity); an empty list means there is no evidence.",
         "operationId": "knowledge-search",
         "security": [
           {
@@ -8169,6 +8715,128 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AnswerRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/assistant/ask/stream": {
+      "post": {
+        "tags": [
+          "assistant"
+        ],
+        "summary": "Ask the assistant, streaming progress",
+        "description": "The same answer as POST /assistant/ask, as server-sent events (text/event-stream): `status` events as each stage starts (searching, retrieved, generating, checking_citations, retrying), comment lines every 10 s while the model works, then one `answer` event with the same body as /ask, or an `error` event. The answer is sent only after its citations are checked, never token by token.",
+        "operationId": "assistant-ask_stream",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Question"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Server-sent events.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
                 }
               }
             }
@@ -9227,6 +9895,112 @@
           }
         ]
       },
+      "AccuracyReport": {
+        "properties": {
+          "since": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Since"
+          },
+          "until": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Until"
+          },
+          "labelled_scans": {
+            "type": "integer",
+            "title": "Labelled Scans"
+          },
+          "confusion": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "type": "object",
+            "title": "Confusion",
+            "description": "flagged = SUSPICIOUS or UNREGISTERED, passed = LIKELY_GENUINE, against the lab outcome (inconclusive results and INCONCLUSIVE scans are left out)."
+          },
+          "precision": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Precision",
+            "description": "Flagged scans that were counterfeit."
+          },
+          "recall": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recall",
+            "description": "Counterfeit packs the pipeline flagged."
+          },
+          "agreement": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agreement",
+            "description": "Pipeline and lab agree."
+          },
+          "cells": {
+            "items": {
+              "$ref": "#/components/schemas/LabelledCount"
+            },
+            "type": "array",
+            "title": "Cells",
+            "description": "By scorer version, verdict and outcome."
+          }
+        },
+        "type": "object",
+        "required": [
+          "since",
+          "until",
+          "labelled_scans",
+          "confusion",
+          "precision",
+          "recall",
+          "agreement",
+          "cells"
+        ],
+        "title": "AccuracyReport",
+        "examples": [
+          {
+            "agreement": 0.8,
+            "cells": [
+              {
+                "count": 19,
+                "lab_outcome": "counterfeit",
+                "pipeline_verdict": "SUSPICIOUS",
+                "scorer_version": "weighted-rules-v2"
+              }
+            ],
+            "confusion": {
+              "flagged_counterfeit": 25,
+              "flagged_genuine": 6,
+              "passed_counterfeit": 2,
+              "passed_genuine": 7
+            },
+            "labelled_scans": 42,
+            "precision": 0.8065,
+            "recall": 0.9259,
+            "since": "2025-11-04T09:00:00Z",
+            "until": "2026-11-04T09:00:00Z"
+          }
+        ]
+      },
       "AnswerRead": {
         "properties": {
           "outcome": {
@@ -9269,11 +10043,16 @@
               }
             ],
             "title": "Reason",
-            "description": "Why there is no answer (a stable code)."
+            "description": "Why there is no answer, a stable code: no_matching_documents, weak_evidence (no passage relevant enough), model_found_no_answer, citations_not_grounded; when degraded, why AI is unavailable; when blocked, the claims."
           },
           "vector_search": {
             "type": "boolean",
             "title": "Vector Search"
+          },
+          "reranked": {
+            "type": "boolean",
+            "title": "Reranked",
+            "default": false
           }
         },
         "type": "object",
@@ -9867,6 +10646,18 @@
             ],
             "title": "Published On"
           },
+          "official": {
+            "type": "boolean",
+            "title": "Official",
+            "description": "The source is official, e.g. a NAFDAC publication.",
+            "default": false
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "description": "false: already withdrawn or superseded.",
+            "default": true
+          },
           "file": {
             "type": "string",
             "contentMediaType": "application/octet-stream",
@@ -10415,11 +11206,13 @@
             "priority": "high",
             "scan": {
               "created_at": "2026-11-03T09:00:00Z",
+              "final_verdict": "UNREGISTERED",
               "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e80",
+              "pipeline_verdict": "UNREGISTERED",
               "reason_codes": [
                 "NOT_IN_REGISTRY"
               ],
-              "verdict": "UNREGISTERED"
+              "reviewed": false
             },
             "state": "NG-KN",
             "status": "open",
@@ -10434,7 +11227,7 @@
             "format": "uuid",
             "title": "Id"
           },
-          "verdict": {
+          "pipeline_verdict": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Verdict"
@@ -10443,9 +11236,9 @@
                 "type": "null"
               }
             ],
-            "description": "The pipeline's verdict."
+            "description": "The scorer's verdict (never changes)."
           },
-          "verdict_override": {
+          "final_verdict": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Verdict"
@@ -10454,7 +11247,13 @@
                 "type": "null"
               }
             ],
-            "description": "The verdict set by this or another case decision, if any."
+            "description": "What clients see."
+          },
+          "reviewed": {
+            "type": "boolean",
+            "title": "Reviewed",
+            "description": "A case decision set the final verdict.",
+            "default": false
           },
           "reason_codes": {
             "items": {
@@ -10504,7 +11303,8 @@
         "type": "object",
         "required": [
           "id",
-          "verdict",
+          "pipeline_verdict",
+          "final_verdict",
           "reason_codes",
           "created_at"
         ],
@@ -10901,6 +11701,16 @@
             ],
             "title": "Published On"
           },
+          "official": {
+            "type": "boolean",
+            "title": "Official",
+            "description": "A regulator vouches for the source."
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active",
+            "description": "false: withdrawn or superseded."
+          },
           "media_type": {
             "type": "string",
             "title": "Media Type"
@@ -10978,6 +11788,8 @@
           "source",
           "source_url",
           "published_on",
+          "official",
+          "active",
           "media_type",
           "size_bytes",
           "status",
@@ -10991,12 +11803,14 @@
         "title": "DocumentRead",
         "examples": [
           {
+            "active": true,
             "chunk_count": 5,
             "created_at": "2026-11-03T09:00:00Z",
             "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0f01",
             "indexed_at": "2026-11-03T09:00:06Z",
             "kind": "alert",
             "media_type": "application/pdf",
+            "official": true,
             "page_count": 2,
             "published_on": "2026-10-14",
             "size_bytes": 182344,
@@ -11017,6 +11831,42 @@
           "failed"
         ],
         "title": "DocumentStatus"
+      },
+      "DocumentUpdate": {
+        "properties": {
+          "official": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Official",
+            "description": "The source is official (e.g. a NAFDAC publication)."
+          },
+          "active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active",
+            "description": "false withdraws the document."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "title": "DocumentUpdate",
+        "examples": [
+          {
+            "active": false
+          }
+        ]
       },
       "FailedTaskRead": {
         "properties": {
@@ -11749,7 +12599,24 @@
                 "type": "null"
               }
             ],
-            "description": "Replace the verdict shown for the scan (audited; the pipeline's verdict is kept). counterfeit allows SUSPICIOUS or UNREGISTERED, genuine allows LIKELY_GENUINE, inconclusive allows none."
+            "description": "Set the scan's final verdict (audited, reversible; the pipeline's verdict is kept). counterfeit allows SUSPICIOUS or UNREGISTERED, genuine allows LIKELY_GENUINE, inconclusive allows none. Requires override_note."
+          },
+          "override_note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000,
+                "minLength": 5,
+                "description": "Free text. Any HTML is stripped; the result is plain text.",
+                "examples": [
+                  "Seal was broken and the print looked faded."
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Note"
           }
         },
         "additionalProperties": false,
@@ -11763,6 +12630,7 @@
             "lab_reference": "NAFDAC-LAB/KN/2026/0412",
             "notes": "No active ingredient detected.",
             "outcome": "counterfeit",
+            "override_note": "Lab found no artemether; counterfeit confirmed.",
             "override_verdict": "SUSPICIOUS"
           }
         ]
@@ -11775,6 +12643,49 @@
           "inconclusive"
         ],
         "title": "LabelOutcome"
+      },
+      "LabelledCount": {
+        "properties": {
+          "scorer_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scorer Version"
+          },
+          "pipeline_verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pipeline Verdict"
+          },
+          "lab_outcome": {
+            "type": "string",
+            "title": "Lab Outcome",
+            "description": "counterfeit, genuine or inconclusive."
+          },
+          "count": {
+            "type": "integer",
+            "title": "Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "scorer_version",
+          "pipeline_verdict",
+          "lab_outcome",
+          "count"
+        ],
+        "title": "LabelledCount"
       },
       "LivenessResponse": {
         "properties": {
@@ -12418,6 +13329,31 @@
           "blocked"
         ],
         "title": "Outcome"
+      },
+      "OverrideRevert": {
+        "properties": {
+          "note": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 5,
+            "title": "Note",
+            "description": "Why (required).",
+            "examples": [
+              "Seal was broken and the print looked faded."
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "note"
+        ],
+        "title": "OverrideRevert",
+        "examples": [
+          {
+            "note": "Lab sample was mislabelled; decision withdrawn."
+          }
+        ]
       },
       "Page_AuditLogRead_": {
         "properties": {
@@ -13707,7 +14643,7 @@
                 "type": "null"
               }
             ],
-            "description": "The verdict the pipeline gave, before any review override."
+            "description": "The scorer's verdict; never changes, even when a case decision overrides."
           },
           "override_case_id": {
             "anyOf": [
@@ -13720,7 +14656,31 @@
               }
             ],
             "title": "Override Case Id",
-            "description": "The case whose decision overrode it."
+            "description": "The case whose decision set it."
+          },
+          "overridden_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Overridden At"
+          },
+          "override_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Override Note",
+            "description": "The reviewer's reason for the decision."
           }
         },
         "type": "object",
@@ -13736,7 +14696,9 @@
           "error_code",
           "llm_used",
           "pipeline_verdict",
-          "override_case_id"
+          "override_case_id",
+          "overridden_at",
+          "override_note"
         ],
         "title": "ScanAnalysis",
         "description": "Detailed evidence, for regulators and platform admins only (scan:read_signals)."
@@ -13751,7 +14713,7 @@
           "status": {
             "$ref": "#/components/schemas/ScanStatus"
           },
-          "verdict": {
+          "final_verdict": {
             "anyOf": [
               {
                 "$ref": "#/components/schemas/Verdict"
@@ -13760,12 +14722,12 @@
                 "type": "null"
               }
             ],
-            "description": "LIKELY_GENUINE, SUSPICIOUS, UNREGISTERED or INCONCLUSIVE; null until done. A reviewer's decision after a lab result replaces the pipeline's verdict."
+            "description": "LIKELY_GENUINE, SUSPICIOUS, UNREGISTERED or INCONCLUSIVE; null until done. The pipeline's verdict, unless a regulator's case decision (after a lab result) set it."
           },
-          "verdict_overridden": {
+          "reviewed": {
             "type": "boolean",
-            "title": "Verdict Overridden",
-            "description": "A reviewer changed the verdict after a lab result.",
+            "title": "Reviewed",
+            "description": "A regulator's case decision set the final verdict.",
             "default": false
           },
           "confidence": {
@@ -13845,7 +14807,7 @@
         "required": [
           "id",
           "status",
-          "verdict",
+          "final_verdict",
           "confidence",
           "reason_codes",
           "advice_codes",
@@ -13864,6 +14826,7 @@
             "created_at": "2026-11-03T09:00:00Z",
             "disclaimer": "This is an automated risk estimate from a photo, not a laboratory test. It cannot prove that a medicine is genuine or safe. If in doubt, ask a pharmacist or report the pack to NAFDAC.",
             "disclaimer_code": "AUTOMATED_ESTIMATE_NOT_A_LAB_TEST",
+            "final_verdict": "SUSPICIOUS",
             "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e80",
             "product": {
               "brand_name": "Panadol Extra Caplet",
@@ -13874,10 +14837,9 @@
               "BATCH_NOT_DECLARED",
               "EXPIRY_MISMATCH"
             ],
+            "reviewed": false,
             "status": "completed",
-            "updated_at": "2026-11-03T09:00:04Z",
-            "verdict": "SUSPICIOUS",
-            "verdict_overridden": false
+            "updated_at": "2026-11-03T09:00:04Z"
           }
         ]
       },
@@ -13986,6 +14948,18 @@
             ],
             "title": "Similarity",
             "description": "Cosine similarity, if found by vector."
+          },
+          "rerank_score": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rerank Score",
+            "description": "The cross-encoder's relevance (0-1), when reranked."
           }
         },
         "type": "object",
@@ -14016,6 +14990,12 @@
             "title": "Vector Search",
             "description": "false: the question could not be embedded in time; keywords and NAFDAC numbers only."
           },
+          "reranked": {
+            "type": "boolean",
+            "title": "Reranked",
+            "description": "The cross-encoder ordered the results (false: fused order).",
+            "default": false
+          },
           "results": {
             "items": {
               "$ref": "#/components/schemas/SearchResultItem"
@@ -14034,6 +15014,7 @@
         "examples": [
           {
             "query": "Is there an alert for Coartem batch F2034?",
+            "reranked": true,
             "results": [
               {
                 "chunk_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0f02",
@@ -14045,6 +15026,7 @@
                 ],
                 "page": 1,
                 "published_on": "2026-10-14",
+                "rerank_score": 0.94,
                 "score": 0.0325,
                 "section": "Details of the counterfeit product",
                 "similarity": 0.87,
@@ -14568,6 +15550,36 @@
         ],
         "title": "Verdict",
         "description": "Never \"safe\" or \"100% genuine\" (CLAUDE.md §4)."
+      },
+      "VerdictOverride": {
+        "properties": {
+          "verdict": {
+            "$ref": "#/components/schemas/Verdict"
+          },
+          "note": {
+            "type": "string",
+            "maxLength": 10000,
+            "minLength": 5,
+            "title": "Note",
+            "description": "Why (required).",
+            "examples": [
+              "Seal was broken and the print looked faded."
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "verdict",
+          "note"
+        ],
+        "title": "VerdictOverride",
+        "examples": [
+          {
+            "note": "Second lab confirmed the counterfeit.",
+            "verdict": "SUSPICIOUS"
+          }
+        ]
       },
       "Visibility": {
         "type": "string",

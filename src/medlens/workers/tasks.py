@@ -3,6 +3,7 @@ errors with exponential backoff and jitter, and lands in ``failed_tasks`` when i
 (``workers/failures.py``)."""
 
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from typing import Any
 from uuid import UUID
 
@@ -98,7 +99,9 @@ def dispatch(event: OutboxEvent) -> None:
     """Map an outbox event to its task. Unknown events raise, so they end up dead-lettered."""
     payload = event.payload or {}
     headers = context_headers(payload.get("context") or {})
-    send = celery_app.send_task
+    # By name, Celery cannot see the task's ignore_result and would subscribe to a result
+    # channel per message (results are ignored: business results live in Postgres).
+    send = partial(celery_app.send_task, ignore_result=True)
     match event.event_type:
         case outbox.SCAN_RECEIVED:
             send(
@@ -222,6 +225,14 @@ def embed_query(text: str) -> list[float] | None:
     The API stops waiting after MEDLENS_KNOWLEDGE__QUERY_EMBEDDING_TIMEOUT_SECONDS."""
     embedder = get_runtime().text_embedder
     return embedder.embed_query(text) if embedder is not None else None
+
+
+@task(name="medlens.knowledge.rerank", ignore_result=False, **_RETRY)
+def rerank(query: str, passages: list[str]) -> list[float] | None:
+    """For the API's search: the cross-encoder's relevance of each passage, returned through
+    the result backend. The API stops waiting after MEDLENS_KNOWLEDGE__RERANK_TIMEOUT_SECONDS."""
+    reranker = get_runtime().reranker
+    return reranker.rerank(query, passages) if reranker is not None else None
 
 
 @task(name="medlens.knowledge.backfill_embeddings", **_RETRY)

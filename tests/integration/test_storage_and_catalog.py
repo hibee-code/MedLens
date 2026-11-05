@@ -2,7 +2,7 @@
 
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from purgatory import AsyncCircuitBreakerFactory
@@ -152,29 +152,41 @@ def test_batches_and_their_spread(session: Session) -> None:
     assert spread.states == frozenset({"NG-LA", "NG-KN"})
 
 
-def test_only_approved_reference_images_count(
+def test_only_approved_reference_images_of_the_same_model_count(
     session: Session, migrated_settings: Settings
 ) -> None:
     item = product(session, f"Visiol {uuid4().hex[:6]}")
     dimension = migrated_settings.embeddings.image_dimension
     genuine = [1.0] + [0.0] * (dimension - 1)
     unrelated = [0.0, 1.0] + [0.0] * (dimension - 2)
-    for status, vector in ((ReviewStatus.APPROVED, genuine), (ReviewStatus.PENDING, unrelated)):
+    other = [0.0, 0.0, 1.0] + [0.0] * (dimension - 3)
+    for status, vector, model in (
+        (ReviewStatus.APPROVED, genuine, "clip@onnx"),
+        (ReviewStatus.PENDING, unrelated, "clip@onnx"),
+        (ReviewStatus.APPROVED, other, "clip"),  # not re-embedded yet after a model change
+    ):
         session.add(
             ReferenceImage(
                 product_id=item.id,
                 side=ImageSide.FRONT,
                 s3_key=f"reference-images/{uuid4()}.jpg",
                 embedding=vector,
+                embedding_model_version=model,
                 status=status,
             )
         )
     session.flush()
     catalog = SqlCatalog(session)
 
-    assert catalog.reference_similarity(item.id, genuine) == pytest.approx(1.0)
-    assert catalog.reference_similarity(item.id, unrelated) == pytest.approx(0.0)
-    assert catalog.reference_similarity(uuid4(), genuine) is None
+    def similarity(product_id: UUID, vector: list[float], model: str = "clip@onnx") -> float | None:
+        return catalog.reference_similarity(product_id, vector, model_version=model)
+
+    assert similarity(item.id, genuine) == pytest.approx(1.0)
+    assert similarity(item.id, unrelated) == pytest.approx(0.0)
+    assert similarity(item.id, other) == pytest.approx(0.0)  # the old model's image is ignored
+    assert similarity(item.id, other, "clip") == pytest.approx(1.0)
+    assert similarity(item.id, genuine, "another-model") is None
+    assert similarity(uuid4(), genuine) is None
 
 
 def test_hamming_distance_handles_signed_hashes() -> None:

@@ -1,0 +1,100 @@
+# Definition of Done in CI: lint and types, the full test suite with coverage (integration tests
+# start Postgres, Redis and MinIO with testcontainers on the runner's Docker), the security
+# audit, the scan eval with a minimum accuracy, and both container images.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  UV_VERSION: "0.13.6" # same as the Dockerfile
+  UV_LOCKED: "1" # fail if uv.lock is out of date
+
+jobs:
+  lint:
+    name: Lint and types
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy src
+
+  test:
+    name: Tests and coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmagic1
+      # ml: ONNX Runtime and tokenizers, for the model adapter tests (tiny fixture models).
+      - run: uv sync --group ml
+      - run: uv run pytest --cov --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: coverage.xml
+
+  audit:
+    name: Security audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: uv sync
+      - run: make audit
+
+  eval:
+    name: Scan eval
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmagic1
+      - run: uv sync
+      # Stand-in models (no API key in CI): measures the readers and the scorer.
+      - run: uv run python scripts/eval.py --skip-assistant --min-accuracy 0.9
+
+  images:
+    name: Container images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        target: [api, worker]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ${{ matrix.target }}
+          push: false
+          tags: medlens-${{ matrix.target }}:ci
+          cache-from: type=gha,scope=${{ matrix.target }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.target }}

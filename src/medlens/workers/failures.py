@@ -14,12 +14,16 @@ from typing import Any
 
 import structlog
 from celery.signals import task_failure
+from prometheus_client import Counter
 from sqlalchemy.dialects.postgresql import insert
 
 from medlens.db.models import FailedTask
 from medlens.workers.runtime import get_runtime
 
 log = structlog.stdlib.get_logger(__name__)
+TASKS_FAILED = Counter(
+    "medlens_tasks_failed", "Tasks that failed for good (retries exhausted or a bug).", ["task"]
+)
 
 ERROR_MAX_LENGTH = 500
 
@@ -91,6 +95,7 @@ def _on_task_failure(
 ) -> None:
     if sender is None or exception is None:
         return
+    TASKS_FAILED.labels(task=sender.name).inc()
     try:
         record_failure(sender.name, task_id, args, kwargs, exception, traceback)
     except Exception as exc:  # recording must never mask the original failure

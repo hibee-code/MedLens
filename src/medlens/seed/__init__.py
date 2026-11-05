@@ -15,6 +15,7 @@ import csv
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -33,9 +34,16 @@ from medlens.modules.organizations.models import (
     OrganizationStatus,
     OrganizationType,
 )
-from medlens.modules.products.models import Batch, Product
+from medlens.modules.products.models import (
+    Batch,
+    ImageSide,
+    Product,
+    ReferenceImage,
+    ReviewStatus,
+)
 from medlens.modules.rbac.models import RoleName
 from medlens.modules.users.models import User
+from medlens.ports.storage import SyncStoragePort
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[3] / "seed"
 REGULATOR_NAME = "National Agency for Food and Drug Administration and Control (NAFDAC)"
@@ -96,10 +104,19 @@ def read_products(path: Path) -> list[dict[str, object]]:
 
 
 def run_seed(
-    session: Session, data_dir: Path = DEFAULT_DATA_DIR, *, staff_password: str | None = None
+    session: Session,
+    data_dir: Path = DEFAULT_DATA_DIR,
+    *,
+    staff_password: str | None = None,
+    reset_staff_logins: bool = False,
+    storage: SyncStoragePort | None = None,
 ) -> SeedSummary:
     """Seed inside the caller's transaction. ``staff_password`` becomes the password of every
-    e-mail test user that has none yet (phone users sign in with SMS codes)."""
+    e-mail test user that has none yet (phone users sign in with SMS codes); with
+    ``reset_staff_logins`` it replaces their passwords and switches their MFA off (demos on a
+    database seeded earlier). With ``storage``, the synthetic reference images in
+    seed/reference_images are stored and registered as approved (the embedding backfill embeds
+    them)."""
     products = read_products(data_dir / "products.csv")
     manufacturers = {
         name: _organization(session, str(name), OrganizationType.MANUFACTURER)
@@ -136,8 +153,11 @@ def run_seed(
     password_hash = hash_password(staff_password) if staff_password else None
     for test_user in TEST_USERS:
         user = _user(session, test_user)
-        if password_hash and test_user.email and user.password_hash is None:
+        if password_hash and test_user.email and (reset_staff_logins or user.password_hash is None):
             user.password_hash = password_hash
+            if reset_staff_logins:
+                user.mfa_enabled = False
+                user.mfa_secret = None
         if test_user.organization:
             session.execute(
                 insert(Membership)
@@ -149,6 +169,11 @@ def run_seed(
                 .on_conflict_do_nothing(index_elements=["user_id", "organization_id"])
             )
     session.flush()
+    if storage is not None:
+        admin = session.scalar(select(User).where(User.email == "platform.admin@medlens.test"))
+        _seed_reference_images(
+            session, data_dir / "reference_images", storage, admin.id if admin else None
+        )
     return SeedSummary(
         products=_count(session, Product),
         organizations=_count(session, Organization),
@@ -238,12 +263,45 @@ def _seed_documents(session: Session, directory: Path) -> None:
             visibility=Visibility(row["visibility"]),
             source=row["source"],
             published_on=date.fromisoformat(row["published_on"]) if row["published_on"] else None,
+            official=row.get("official") == "true",
+            active=row.get("active", "true") == "true",
             media_type="text/plain",
             size_bytes=len(data),
         )
         session.add(document)
         session.flush()
         index_pages(session, document, extract_pages(data, "text/plain"), None, KnowledgeSettings())
+
+
+def _seed_reference_images(
+    session: Session, directory: Path, storage: SyncStoragePort, reviewer: UUID | None
+) -> None:
+    index = directory / "index.csv"
+    if not index.exists():
+        return
+    with index.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    for row in rows:
+        product = session.scalar(
+            select(Product).where(Product.nafdac_number == row["nafdac_number"])
+        )
+        key = f"reference-images/seed/{row['file']}"
+        if product is None or session.scalar(
+            select(ReferenceImage.id).where(ReferenceImage.s3_key == key)
+        ):
+            continue
+        storage.put(key, (directory / row["file"]).read_bytes(), content_type="image/jpeg")
+        session.add(
+            ReferenceImage(
+                product_id=product.id,
+                side=ImageSide(row["side"]),
+                s3_key=key,
+                status=ReviewStatus.APPROVED,  # synthetic seed data, for local demos only
+                reviewed_at=datetime.now(UTC),
+                verified_by=reviewer,
+            )
+        )
+    session.flush()
 
 
 def _user(session: Session, test_user: TestUser) -> User:

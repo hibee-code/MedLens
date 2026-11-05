@@ -65,5 +65,10 @@ class AnswerRead(ReadModel):
     results: list[SearchResultItem] = Field(
         description="Search results instead of an answer, when degraded."
     )
-    reason: str | None = Field(description="Why there is no answer (a stable code).")
+    reason: str | None = Field(
+        description="Why there is no answer, a stable code: no_matching_documents, weak_evidence "
+        "(no passage relevant enough), model_found_no_answer, citations_not_grounded; when "
+        "degraded, why AI is unavailable; when blocked, the claims."
+    )
     vector_search: bool
+    reranked: bool = False

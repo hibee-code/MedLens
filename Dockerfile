@@ -4,7 +4,7 @@
 # stages copy only that virtualenv and run as an unprivileged user. No dev dependencies ship.
 #
 #   docker build --target api    -t medlens-api .      # FastAPI, one Uvicorn process
-#   docker build --target worker -t medlens-worker .   # Celery worker: `vision` and `ml` groups
+#   docker build --target worker -t medlens-worker .   # Celery worker: vision, ONNX models
 
 ARG PYTHON_IMAGE=python:3.12.16-slim-trixie
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.13.6
@@ -31,6 +31,25 @@ COPY pyproject.toml uv.lock ./
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-default-groups --no-editable
+
+# The models, exported to ONNX and checked against torch (scripts/export_onnx.py). torch only
+# lives in this stage: the worker runs ONNX Runtime. Cached until the lockfile, the export
+# script or the model names change.
+FROM builder AS models
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-default-groups --group ml --group ml-export --no-install-project
+ARG IMAGE_MODEL=clip-ViT-B-32
+ARG TEXT_MODEL=intfloat/multilingual-e5-small
+ARG RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
+ENV HF_HOME=/tmp/hf-cache \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    ORT_DISABLE_TELEMETRY=1
+COPY scripts/export_onnx.py /export/scripts/export_onnx.py
+COPY src/medlens/adapters/onnx_models.py /export/src/medlens/adapters/onnx_models.py
+RUN /opt/venv/bin/python /export/scripts/export_onnx.py --out /opt/models/onnx \
+      --image-model "$IMAGE_MODEL" --text-model "$TEXT_MODEL" --reranker "$RERANKER_MODEL"
 
 FROM builder AS builder-worker
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -78,10 +97,11 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends libgomp1 tesseract-ocr tesseract-ocr-eng \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=builder-worker /opt/venv /opt/venv
-# Embedding models are downloaded on first use into the Hugging Face cache; /app is not
-# writable by the runtime user. Bake the models into the image (or mount a volume here) in
-# production so workers start without network access.
-ENV HF_HOME=/tmp/huggingface \
+COPY --from=models /opt/models/onnx /opt/models/onnx
+# ORT_DISABLE_TELEMETRY: ONNX Runtime (1.31+) otherwise reports usage events.
+ENV MEDLENS_EMBEDDINGS__BACKEND=onnx \
+    MEDLENS_EMBEDDINGS__ONNX_DIR=/opt/models/onnx \
+    ORT_DISABLE_TELEMETRY=1 \
     PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus-multiproc
 USER medlens
 # Prometheus metrics of all pool processes (MEDLENS_OBSERVABILITY__WORKER_METRICS_PORT).

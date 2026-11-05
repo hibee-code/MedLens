@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from medlens.adapters.fakes import (
     AsyncFakeLLMProvider,
+    AsyncFakeReranker,
     FakeBarcode,
     FakeImageAnalysis,
     FakeOcr,
@@ -41,7 +42,7 @@ from medlens.main import create_app
 from medlens.modules.audit.models import AuditLog
 from medlens.modules.auth.deps import MfaVerifiedUser
 from medlens.modules.knowledge.ingestion import ingest_document
-from medlens.modules.knowledge.router import get_query_embedder
+from medlens.modules.knowledge.router import get_query_embedder, get_reranker
 from medlens.modules.organizations.models import (
     Membership,
     Organization,
@@ -336,6 +337,8 @@ async def open_api(settings: Settings) -> AsyncIterator[Api]:
     app.dependency_overrides[get_storage] = lambda: storage
     query_embedder = FakeQueryEmbedder(FakeTextEmbedder())
     app.dependency_overrides[get_query_embedder] = lambda: query_embedder
+    reranker = AsyncFakeReranker()
+    app.dependency_overrides[get_reranker] = lambda: reranker
     engine = create_sync_engine(settings.database, application_name="medlens-tests")
     try:
         async with app.router.lifespan_context(app):

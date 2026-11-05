@@ -9,7 +9,9 @@ from medlens.modules.rbac.access import Actor
 from medlens.modules.rbac.deps import require_permissions
 from medlens.modules.rbac.permissions import Permission
 from medlens.modules.reports.schemas import (
+    AccuracyReport,
     DayCount,
+    LabelledCount,
     LLMUsage,
     ManufacturerReportRead,
     ProductWeekCell,
@@ -65,6 +67,35 @@ async def stats_summary(
             calls=counts.llm_calls,
             cost_usd=counts.llm_cost_usd,
         ),
+    )
+
+
+@stats_router.get(
+    "/accuracy",
+    response_model=AccuracyReport,
+    summary="Pipeline accuracy against lab results",
+    description=(
+        "Compares the pipeline's verdict (never the final, reviewed one) with the lab results "
+        "recorded on cases in the last `days`, per scorer version: precision, recall and "
+        "agreement. Regulators see scans in their jurisdiction; platform admins see all."
+    ),
+    responses=problem_responses(401, 403, 422),
+)
+async def accuracy(
+    actor: Annotated[Actor, Depends(require_permissions(Permission.SCAN_READ_ALL))],
+    service: ServiceDep,
+    days: Annotated[int, Query(ge=1, le=3650)] = 365,
+) -> AccuracyReport:
+    report = await service.accuracy(actor, days)
+    return AccuracyReport(
+        since=report.since,
+        until=report.until,
+        labelled_scans=sum(cell.count for cell in report.cells),
+        confusion=report.confusion,
+        precision=report.precision,
+        recall=report.recall,
+        agreement=report.agreement,
+        cells=[LabelledCount.model_validate(cell, from_attributes=True) for cell in report.cells],
     )
 
 

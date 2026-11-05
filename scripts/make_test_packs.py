@@ -7,8 +7,9 @@ seed/batches.csv); unregistered numbers are made up. These are drawings, not pho
 packs: they exercise the readers and the scorer, not real-world accuracy.
 
 Writes:
-  tests/fixtures/packs/   the five M3 fixtures and packs.csv
-  seed/test_packs/        the eval set and expected.csv
+  tests/fixtures/packs/    the five M3 fixtures and packs.csv
+  seed/test_packs/         the eval set and expected.csv
+  seed/reference_images/   one synthetic front per seeded product, loaded by the seed
 
 Deterministic: running it again produces the same files.
 """
@@ -27,6 +28,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "packs"
 EVAL = ROOT / "seed" / "test_packs"
+REFERENCES = ROOT / "seed" / "reference_images"
 SIZE = (1200, 1600)
 
 
@@ -169,10 +171,37 @@ def write(packs: tuple[Pack, ...], directory: Path, index: str) -> None:
         writer.writerows(rows)
 
 
+# One clean front per seeded product: what an approved manufacturer reference would show.
+REFERENCE_PRODUCTS = (
+    ("04-0289", EMZOR, (214, 196, 160)),
+    ("A4-2374", ADALAT, (214, 196, 160)),
+    ("04-8655", AUGMENTIN, (230, 230, 236)),
+    ("A4-3489", AMATEM, (200, 220, 205)),
+    ("04-0489", ALABUKUN, (225, 205, 205)),
+)
+
+
+def write_references(directory: Path) -> None:
+    """Synthetic reference images (seed/reference_images), loaded by the seed as approved."""
+    directory.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for number, brand, card in REFERENCE_PRODUCTS:
+        name = f"{number}-front.jpg"
+        reference = Pack(name, brand, number, "(printed per batch)", "(per batch)", "", "",
+                         gtin=None, card=card)  # fmt: skip
+        (directory / name).write_bytes(draw(reference))
+        rows.append({"file": name, "nafdac_number": number, "side": "front"})
+    with (directory / "index.csv").open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def main() -> int:
     argparse.ArgumentParser(description=__doc__).parse_args()
     write(FIXTURE_PACKS, FIXTURES, "packs.csv")
     write(EVAL_PACKS, EVAL, "expected.csv")
+    write_references(REFERENCES)
     sys.stdout.write(f"wrote {len(FIXTURE_PACKS)} fixtures and {len(EVAL_PACKS)} eval packs\n")
     return 0
 

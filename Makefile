@@ -10,7 +10,8 @@ GREENBOOK_SOURCE ?=
 INFRA := postgres pgbouncer redis minio
 
 .PHONY: help dev-secrets env install install-ml dev test test-unit test-integration lint format typecheck check \
-	openapi migrate seed embeddings greenbook-import up infra down logs eval demo test-packs
+	openapi migrate seed embeddings greenbook-import up infra down logs eval demo test-packs \
+	audit ci dashboard onnx
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_.-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -28,8 +29,11 @@ env: dev-secrets ## Same as dev-secrets
 install: ## Install main + dev dependencies into .venv
 	$(UV) sync
 
-install-ml: ## Also install the ml group (embedding models; large, worker image only)
-	$(UV) sync --group ml
+install-ml: ## Also install the model groups: ONNX Runtime (ml) and torch for exports (ml-export)
+	$(UV) sync --group ml --group ml-export
+
+onnx: ## Export the models to ONNX into models/onnx (worker image: done while building)
+	$(UV) run python scripts/export_onnx.py --out models/onnx
 
 dev: .env ## Run the API with auto-reload on :8000 (needs `make infra`)
 	$(UV) run uvicorn medlens.main:create_app --factory --reload --host 127.0.0.1 --port 8000
@@ -55,6 +59,20 @@ typecheck: ## mypy --strict on src
 	$(UV) run mypy src
 
 check: lint typecheck test ## Everything the Definition of Done requires
+
+audit: ## Known vulnerabilities in the locked dependencies (pip-audit) and security lint (bandit)
+	@requirements=$$(mktemp) && \
+	$(UV) export --format requirements-txt --no-hashes --all-groups --no-emit-project --quiet \
+		| sed -E 's/\+cpu//' > $$requirements && \
+	$(UV) run pip-audit -r $$requirements --disable-pip --no-deps --progress-spinner off; \
+	status=$$?; rm -f $$requirements; exit $$status
+	$(UV) run bandit -c pyproject.toml -r src --severity-level medium --quiet
+
+ci: check audit ## What CI runs (plus the eval and image builds, see .github/workflows/ci.yml)
+	$(UV) run python scripts/eval.py --skip-assistant --min-accuracy 0.9
+
+dashboard: ## Regenerate the Grafana dashboard from scripts/make_dashboard.py
+	$(UV) run python scripts/make_dashboard.py
 
 openapi: ## Regenerate the committed openapi.json after API changes
 	$(UV) run python scripts/export_openapi.py

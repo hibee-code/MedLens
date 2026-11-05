@@ -69,9 +69,11 @@ class ScanAnalysis(ReadModel):
     error_code: str | None
     llm_used: bool = Field(description="The vision LLM helped read the pack.")
     pipeline_verdict: Verdict | None = Field(
-        description="The verdict the pipeline gave, before any review override."
+        description="The scorer's verdict; never changes, even when a case decision overrides."
     )
-    override_case_id: UUID | None = Field(description="The case whose decision overrode it.")
+    override_case_id: UUID | None = Field(description="The case whose decision set it.")
+    overridden_at: datetime | None
+    override_note: str | None = Field(description="The reviewer's reason for the decision.")
 
 
 class ScanRead(ReadModel):
@@ -81,11 +83,11 @@ class ScanRead(ReadModel):
                 {
                     "id": _ID,
                     "status": "completed",
-                    "verdict": "SUSPICIOUS",
+                    "final_verdict": "SUSPICIOUS",
+                    "reviewed": False,
                     "confidence": 0.71,
                     "reason_codes": ["BATCH_NOT_DECLARED", "EXPIRY_MISMATCH"],
                     "advice_codes": ["DO_NOT_USE", "ASK_A_PHARMACIST"],
-                    "verdict_overridden": False,
                     "product": {
                         "nafdac_number": "04-0005",
                         "brand_name": "Panadol Extra Caplet",
@@ -103,14 +105,14 @@ class ScanRead(ReadModel):
 
     id: UUID
     status: ScanStatus
-    verdict: Verdict | None = Field(
+    final_verdict: Verdict | None = Field(
         description=(
-            "LIKELY_GENUINE, SUSPICIOUS, UNREGISTERED or INCONCLUSIVE; null until done. A "
-            "reviewer's decision after a lab result replaces the pipeline's verdict."
+            "LIKELY_GENUINE, SUSPICIOUS, UNREGISTERED or INCONCLUSIVE; null until done. The "
+            "pipeline's verdict, unless a regulator's case decision (after a lab result) set it."
         )
     )
-    verdict_overridden: bool = Field(
-        default=False, description="A reviewer changed the verdict after a lab result."
+    reviewed: bool = Field(
+        default=False, description="A regulator's case decision set the final verdict."
     )
     confidence: float | None = Field(description="0-1: how much evidence the verdict rests on.")
     reason_codes: list[str] = Field(description="Why; stable codes the client translates.")

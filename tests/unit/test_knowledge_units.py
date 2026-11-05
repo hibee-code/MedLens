@@ -240,13 +240,8 @@ def test_worker_metrics_use_the_multiprocess_directory(
     monkeypatch.delenv(worker_metrics.MULTIPROC_ENV, raising=False)
     assert worker_metrics.registry() is worker_metrics.REGISTRY
 
-    directory = tmp_path / "prom"
-    monkeypatch.setenv(worker_metrics.MULTIPROC_ENV, str(directory))
-    (tmp_path / "prom").mkdir()
-    (directory / "stale.db").write_text("old")
-    worker_metrics.reset_multiproc_dir()
+    monkeypatch.setenv(worker_metrics.MULTIPROC_ENV, str(tmp_path))
 
-    assert list(directory.iterdir()) == []
     assert worker_metrics.registry() is not worker_metrics.REGISTRY
     worker_metrics.mark_process_dead()
 

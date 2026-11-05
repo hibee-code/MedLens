@@ -233,7 +233,8 @@ async def test_scans_route_to_partitions_and_cases_reference_them(
 ) -> None:
     now = datetime.now(UTC)
     current = Scan(
-        verdict=Verdict.SUSPICIOUS,
+        pipeline_verdict=Verdict.SUSPICIOUS,
+        final_verdict=Verdict.SUSPICIOUS,
         risk_score=0.72,
         location_coarse=WKTElement("POINT(3.379 6.524)", srid=4326),
         geocell="s14jgp",

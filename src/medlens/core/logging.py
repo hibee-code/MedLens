@@ -12,6 +12,7 @@ from structlog.typing import EventDict, Processor, WrappedLogger
 
 from medlens.core.config import Environment, Settings
 from medlens.core.context import snapshot
+from medlens.core.telemetry import add_trace_context
 
 # Loggers that install their own handlers; we clear them and let records reach the root handler.
 _PROPAGATED_LOGGERS = ("uvicorn", "uvicorn.error", "celery")
@@ -37,6 +38,7 @@ def configure_logging(settings: Settings) -> None:
     shared: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         add_request_context,
+        add_trace_context,
         structlog.stdlib.add_logger_name,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),

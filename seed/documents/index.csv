@@ -1,4 +1,4 @@
-file,title,kind,visibility,source,published_on
-sample-alert-augmentin.md,SAMPLE Public Alert S-001/2026: counterfeit Augmentin 1 G,alert,professional,MedLens sample documents (not official),2026-10-14
-sample-recall-adalat.md,SAMPLE Recall Notice S-002/2026: ADALAT LA 30MG batch SEED-A4-2374-B,recall,professional,MedLens sample documents (not official),2026-10-20
-sample-sop-reporting.md,SAMPLE SOP: reporting a suspected counterfeit medicine,sop,professional,MedLens sample documents (not official),2026-09-01
+file,title,kind,visibility,source,published_on,official,active
+sample-alert-augmentin.md,SAMPLE Public Alert S-001/2026: counterfeit Augmentin 1 G,alert,professional,MedLens sample documents (not official),2026-10-14,false,true
+sample-recall-adalat.md,SAMPLE Recall Notice S-002/2026: ADALAT LA 30MG batch SEED-A4-2374-B,recall,professional,MedLens sample documents (not official),2026-10-20,false,true
+sample-sop-reporting.md,SAMPLE SOP: reporting a suspected counterfeit medicine,sop,professional,MedLens sample documents (not official),2026-09-01,false,true

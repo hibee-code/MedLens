@@ -25,7 +25,9 @@ class ReasonCode(StrEnum):
     BATCH_SEEN_WIDELY = "BATCH_SEEN_WIDELY"
     OUTSIDE_DISTRIBUTION = "OUTSIDE_DISTRIBUTION"
     VISUAL_MISMATCH = "VISUAL_MISMATCH"
-    PUBLISHED_ALERT = "PUBLISHED_ALERT"  # NAFDAC alert or recall names this product or batch
+    PUBLISHED_ALERT = "PUBLISHED_ALERT"  # an official alert names this product and batch
+    ALERT_FOR_THIS_PRODUCT = "ALERT_FOR_THIS_PRODUCT"  # an official alert names the product only
+    RECALLED_BATCH = "RECALLED_BATCH"  # an official recall covers this batch
 
 
 class AdviceCode(StrEnum):
@@ -35,3 +37,4 @@ class AdviceCode(StrEnum):
     REPORT_TO_NAFDAC = "REPORT_TO_NAFDAC"
     ASK_A_PHARMACIST = "ASK_A_PHARMACIST"
     CHECK_EXPIRY_DATE = "CHECK_EXPIRY_DATE"
+    DO_NOT_USE_RETURN = "DO_NOT_USE_RETURN"  # recalled: stop using it, return it where bought

@@ -5,6 +5,7 @@ import httpx
 import pytest
 from fastapi import FastAPI
 
+from medlens.core import config
 from medlens.core.config import Settings
 from medlens.main import create_app
 from tests.support import build_settings
@@ -14,12 +15,17 @@ SettingsFactory = Callable[..., Settings]
 
 @pytest.fixture(scope="session", autouse=True)
 def _isolated_environment() -> Iterator[None]:
-    """Tests (and session fixtures) never see MEDLENS_* variables from the developer's shell."""
+    """Tests (and session fixtures) never see MEDLENS_* variables from the developer's shell,
+    nor the developer's .env: code that loads settings itself (``get_settings()``, e.g. the
+    Celery app's configuration) gets test settings, so the suite runs the same in CI."""
     with pytest.MonkeyPatch.context() as patch:
         for name in list(os.environ):
             if name.startswith("MEDLENS_"):
                 patch.delenv(name)
+        patch.setattr(config, "load_settings", build_settings)
+        config.get_settings.cache_clear()
         yield
+        config.get_settings.cache_clear()
 
 
 @pytest.fixture

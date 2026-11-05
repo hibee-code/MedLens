@@ -63,6 +63,56 @@ class StatsSummary(ReadModel):
     llm: LLMUsage
 
 
+class LabelledCount(ReadModel):
+    scorer_version: str | None
+    pipeline_verdict: str | None
+    lab_outcome: str = Field(description="counterfeit, genuine or inconclusive.")
+    count: int
+
+
+class AccuracyReport(ReadModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "since": "2025-11-04T09:00:00Z",
+                    "until": "2026-11-04T09:00:00Z",
+                    "labelled_scans": 42,
+                    "confusion": {
+                        "flagged_counterfeit": 25,
+                        "flagged_genuine": 6,
+                        "passed_counterfeit": 2,
+                        "passed_genuine": 7,
+                    },
+                    "precision": 0.8065,
+                    "recall": 0.9259,
+                    "agreement": 0.8,
+                    "cells": [
+                        {
+                            "scorer_version": "weighted-rules-v2",
+                            "pipeline_verdict": "SUSPICIOUS",
+                            "lab_outcome": "counterfeit",
+                            "count": 19,
+                        }
+                    ],
+                }
+            ]
+        }
+    )
+
+    since: datetime
+    until: datetime
+    labelled_scans: int
+    confusion: dict[str, int] = Field(
+        description="flagged = SUSPICIOUS or UNREGISTERED, passed = LIKELY_GENUINE, against "
+        "the lab outcome (inconclusive results and INCONCLUSIVE scans are left out)."
+    )
+    precision: float | None = Field(description="Flagged scans that were counterfeit.")
+    recall: float | None = Field(description="Counterfeit packs the pipeline flagged.")
+    agreement: float | None = Field(description="Pipeline and lab agree.")
+    cells: list[LabelledCount] = Field(description="By scorer version, verdict and outcome.")
+
+
 class ProductWeekCell(ReadModel):
     product_id: UUID
     nafdac_number: str

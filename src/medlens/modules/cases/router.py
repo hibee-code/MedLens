@@ -9,7 +9,15 @@ from medlens.core.pagination import Cursor, Page, PageParams, build_page, page_p
 from medlens.core.routing import api_v1_router
 from medlens.modules.auth.deps import Meta as RequestMetaDep
 from medlens.modules.cases.models import Case, CasePriority, CaseStatus
-from medlens.modules.cases.schemas import CaseAssignment, CaseRead, CaseScan, CaseUpdate, LabResult
+from medlens.modules.cases.schemas import (
+    CaseAssignment,
+    CaseRead,
+    CaseScan,
+    CaseUpdate,
+    LabResult,
+    OverrideRevert,
+    VerdictOverride,
+)
 from medlens.modules.cases.service import CaseService
 from medlens.modules.rbac.access import Actor
 from medlens.modules.rbac.deps import require_permissions
@@ -51,8 +59,9 @@ def _read(row: tuple[Case, Scan]) -> CaseRead:
         lab_result=case.lab_result,
         scan=CaseScan(
             id=scan.id,
-            verdict=scan.verdict,
-            verdict_override=scan.verdict_override,
+            pipeline_verdict=scan.pipeline_verdict,
+            final_verdict=scan.final_verdict,
+            reviewed=scan.reviewed,
             reason_codes=list(scan.reason_codes),
             signals=scan.signals,
             extracted=scan.extracted,
@@ -183,8 +192,43 @@ async def record_lab_result(
             body.notes,
             meta,
             override=body.override_verdict,
+            override_note=body.override_note,
         )
     )
+
+
+@router.post(
+    "/{case_id}/override",
+    response_model=CaseRead,
+    summary="Decide the scan's final verdict",
+    description=(
+        "After the lab result, sets (or changes) the final verdict clients see, with a required "
+        "note: counterfeit allows SUSPICIOUS or UNREGISTERED, genuine allows LIKELY_GENUINE. "
+        "Also on resolved cases. The pipeline's verdict is kept; the decision is audited and can "
+        "be reverted. Regulators and platform admins only."
+    ),
+    responses=problem_responses(401, 403, 404, 409, 422),
+)
+async def override_verdict(
+    case_id: UUID, body: VerdictOverride, actor: Reviewer, service: ServiceDep, meta: RequestMetaDep
+) -> CaseRead:
+    return _read(await service.override(actor, case_id, body.verdict, body.note, meta))
+
+
+@router.post(
+    "/{case_id}/override/revert",
+    response_model=CaseRead,
+    summary="Revert a verdict decision",
+    description=(
+        "Returns the scan to the pipeline's verdict, with a required note. The reverted "
+        "decision stays in the audit log. Regulators and platform admins only."
+    ),
+    responses=problem_responses(401, 403, 404, 409, 422),
+)
+async def revert_override(
+    case_id: UUID, body: OverrideRevert, actor: Reviewer, service: ServiceDep, meta: RequestMetaDep
+) -> CaseRead:
+    return _read(await service.revert_override(actor, case_id, body.note, meta))
 
 
 @router.get(

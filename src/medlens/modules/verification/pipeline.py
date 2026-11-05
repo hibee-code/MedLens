@@ -36,7 +36,7 @@ from medlens.core.identifiers import (
     sanitize_text,
 )
 from medlens.modules.products.models import RegistrationStatus
-from medlens.modules.verification.catalog import BatchFacts, Catalog, ProductFacts
+from medlens.modules.verification.catalog import AlertFacts, BatchFacts, Catalog, ProductFacts
 from medlens.modules.verification.codes import ReasonCode
 from medlens.modules.verification.extraction import (
     ExtractedField,
@@ -49,7 +49,7 @@ from medlens.modules.verification.extraction import (
 )
 from medlens.modules.verification.scoring import (
     UNAVAILABLE,
-    WEIGHTS_V1,
+    WEIGHTS,
     RiskScorer,
     Score,
     ScoreInput,
@@ -157,7 +157,7 @@ class PipelineResult:
             "signals": {
                 name.value: {
                     "value": signal.value,
-                    "weight": WEIGHTS_V1[name],
+                    "weight": WEIGHTS[name],
                     **signal.detail,
                 }
                 for name, signal in self.signals.items()
@@ -251,23 +251,12 @@ class VerificationPipeline:
                 signals.update(batch_signals)
                 pack_expired = self._expired(extraction.expiry_date, batch, scan.received_at)
             batch_number = extraction.batch_number.value if extraction.batch_number else None
-            alert = run.stage(
+            alerts = run.stage(
                 "alerts",
-                lambda: self._catalog.published_alert(match.product.nafdac_number, batch_number),
+                lambda: self._catalog.published_alerts(match.product.nafdac_number, batch_number),
             )
-            if run.stages[-1].outcome == "ok":
-                signals[SignalName.COUNTERFEIT_ALERT] = (
-                    Signal(
-                        1.0,
-                        {
-                            "document_id": str(alert.document_id),
-                            "kind": alert.kind,
-                            "batch_specific": alert.batch_specific,
-                        },
-                    )
-                    if alert is not None
-                    else Signal(0.0)
-                )
+            if alerts is not None:
+                signals.update(_alert_signals(alerts))
             visual = run.stage("visual", lambda: self._visual(scan, match.product))
             if visual is not None:
                 signals[SignalName.VISUAL_MISMATCH] = visual
@@ -433,6 +422,10 @@ class VerificationPipeline:
         presence = name_presence(match.product.brand_name, text)
         if presence is None:
             return UNAVAILABLE
+        if presence == 0.0:
+            # None of the name was read (stylised or light-on-dark print): no evidence either
+            # way. A partly read or misspelt name is evidence, and scores as a mismatch.
+            return Signal(None, {"presence": 0.0})
         return Signal(round(1.0 - presence, 4), {"presence": round(presence, 3)})
 
     # ------------------------------------------------------------------ batch
@@ -488,9 +481,13 @@ class VerificationPipeline:
         if self._embedder is None:
             return UNAVAILABLE
         embedding = self._embedder.embed_image(scan.image)
-        similarity = self._catalog.reference_similarity(product.id, embedding)
+        similarity = self._catalog.reference_similarity(
+            product.id, embedding, model_version=self._embedder.model_version
+        )
         if similarity is None:
-            return UNAVAILABLE  # no approved reference images: lowers confidence only
+            # No approved reference images (or none re-embedded yet after a model change):
+            # lowers confidence only.
+            return UNAVAILABLE
         high, low = self._config.visual_match, self._config.visual_mismatch
         value = min(1.0, max(0.0, (high - similarity) / (high - low)))
         return Signal(round(value, 4), {"similarity": round(similarity, 4)})
@@ -504,6 +501,22 @@ class VerificationPipeline:
         batch = extraction.batch_number.confidence if extraction.batch_number else 0.0
         expiry = extraction.expiry_date.confidence if extraction.expiry_date else 0.0
         return 0.6 * match.score + 0.2 * batch + 0.2 * expiry
+
+
+def _alert_signals(alerts: list[AlertFacts]) -> dict[SignalName, Signal]:
+    """Official, active notices naming the product: a counterfeit alert for this batch, an
+    alert for the product (any batch), a recall of this batch (or of every batch)."""
+    groups: dict[SignalName, list[AlertFacts]] = {
+        SignalName.COUNTERFEIT_ALERT: [a for a in alerts if a.kind == "alert" and a.batch_specific],
+        SignalName.PRODUCT_ALERT: [a for a in alerts if a.kind == "alert" and not a.batch_specific],
+        SignalName.RECALLED_BATCH: [a for a in alerts if a.kind == "recall"],
+    }
+    return {
+        name: Signal(1.0, {"documents": [str(a.document_id) for a in found]})
+        if found
+        else Signal(0.0)
+        for name, found in groups.items()
+    }
 
 
 class _Run:

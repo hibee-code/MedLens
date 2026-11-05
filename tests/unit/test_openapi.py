@@ -85,9 +85,10 @@ def test_every_route_follows_the_conventions(schema: dict[str, Any]) -> None:
                 assert not operation["responses"][code].get("content"), f"{where}: 204 has no body"
                 continue
             content = operation["responses"][code].get("content", {})
-            if "application/json" not in content and content:  # a file download
+            if "application/json" not in content and content:  # a download or an event stream
                 for media_type, body in content.items():
-                    assert body.get("schema") == BINARY, f"{where}: {media_type} must be binary"
+                    expected = {"type": "string"} if media_type == "text/event-stream" else BINARY
+                    assert body.get("schema") == expected, f"{where}: {media_type} schema"
                 continue
             body = content.get("application/json", {})
             assert "schema" in body, f"{where}: {code} needs a response_model"

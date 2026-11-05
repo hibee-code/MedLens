@@ -320,14 +320,39 @@ async def detach_user(session: AsyncSession, user_id: UUID) -> None:
     await session.execute(update(Scan).where(Scan.user_id == user_id).values(user_id=None))
 
 
+@dataclass(frozen=True, slots=True)
+class Override:
+    verdict: Verdict
+    case_id: UUID
+    lab_result: dict[str, Any]
+    note: str
+
+
 async def override_verdict(
-    session: AsyncSession, scan: Scan, verdict: Verdict, *, case_id: UUID
+    session: AsyncSession, scan: Scan, override: Override, *, by: UUID | None
 ) -> Verdict | None:
-    """A confirmed case decision supersedes the pipeline's verdict; the pipeline's verdict
-    stays stored. Returns the verdict shown before. The caller audits the change."""
-    shown = scan.verdict_override or scan.verdict
-    scan.verdict_override = verdict
-    scan.override_case_id = case_id
+    """A regulator's case decision sets the final verdict; the pipeline's verdict never
+    changes. Returns the final verdict before. The caller checks permission and audits."""
+    before = scan.final_verdict
+    scan.final_verdict = override.verdict
+    scan.overridden_by = by
     scan.overridden_at = datetime.now(UTC)
+    scan.override_case_id = override.case_id
+    scan.override_lab_result = override.lab_result
+    scan.override_note = override.note
     await session.flush()
-    return shown
+    return before
+
+
+async def revert_override(session: AsyncSession, scan: Scan) -> Verdict | None:
+    """Back to the pipeline's verdict. Returns the overridden verdict; the audit log keeps the
+    history."""
+    before = scan.final_verdict
+    scan.final_verdict = scan.pipeline_verdict
+    scan.overridden_by = None
+    scan.overridden_at = None
+    scan.override_case_id = None
+    scan.override_lab_result = None
+    scan.override_note = None
+    await session.flush()
+    return before

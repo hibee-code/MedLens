@@ -16,6 +16,7 @@ The assistant never sees or changes a scan's verdict.
 """
 
 import hashlib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
@@ -32,6 +33,12 @@ from medlens.ports.llm import LLMCallFailedError, LLMUnavailableError
 
 log = structlog.stdlib.get_logger(__name__)
 ROUTE = "assistant_answer"
+# The streaming endpoint hears each stage as it starts.
+Progress = Callable[[str, dict[str, object]], Awaitable[None]]
+
+
+async def _silent(stage: str, data: dict[str, object]) -> None:
+    del stage, data
 
 
 class Outcome(StrEnum):
@@ -72,6 +79,7 @@ class AssistantReply:
     results: list[SearchHit] = field(default_factory=list)  # degraded: what search found
     reason: str | None = None  # why degraded, blocked or without evidence
     vector_search: bool = True
+    reranked: bool = False
 
 
 def check_grounding(answer: ModelAnswer, hits: dict[str, SearchHit]) -> list[str]:
@@ -101,27 +109,54 @@ class AssistantService:
         self._gateway = gateway
         self._settings = settings
 
-    async def ask(self, actor: Actor, question: str) -> AssistantReply:
+    async def ask(
+        self, actor: Actor, question: str, progress: Progress | None = None
+    ) -> AssistantReply:
+        """``progress`` hears each stage as it starts (the streaming endpoint): searching,
+        retrieved, generating, checking_citations, retrying."""
+        emit = progress or _silent
         question = scrub_pii(question)
+        await emit("searching", {})
         found = await self._knowledge.search(actor, question)
+        await emit(
+            "retrieved",
+            {
+                "documents": len(found.hits),
+                "vector_search": found.vector_search,
+                "reranked": found.reranked,
+            },
+        )
         if not found.hits:
             return AssistantReply(
                 Outcome.INSUFFICIENT_EVIDENCE,
                 reason="no_matching_documents",
                 vector_search=found.vector_search,
+                reranked=found.reranked,
             )
         if self._gateway is None or not self._settings.assistant_enabled:
             return self._degraded(found, "disabled")
-        hits = {str(hit.chunk.chunk_id): hit for hit in found.hits}
+        evidence = self._evidence(found)
+        if not evidence:
+            log.info("assistant.weak_evidence", candidates=len(found.hits))
+            return AssistantReply(
+                Outcome.INSUFFICIENT_EVIDENCE,
+                reason="weak_evidence",
+                vector_search=found.vector_search,
+                reranked=found.reranked,
+            )
+        hits = {str(hit.chunk.chunk_id): hit for hit in evidence}
         subject = Subject("question", hashlib.sha256(question.encode()).hexdigest()[:32])
-        parts = self._parts(found.hits, question)
+        parts = self._parts(evidence, question)
         try:
+            await emit("generating", {})
             answer = await self._gateway.run(
                 ROUTE, parts, ModelAnswer, user_id=actor.user_id, subject=subject
             )
+            await emit("checking_citations", {})
             problems = check_grounding(answer, hits)
             if problems:
                 log.info("assistant.ungrounded", problems=len(problems), attempt=1)
+                await emit("retrying", {"problems": len(problems)})
                 retry = [*parts, TextPart(_retry_note(problems))]
                 answer = await self._gateway.run(
                     ROUTE, retry, ModelAnswer, user_id=actor.user_id, subject=subject
@@ -137,6 +172,7 @@ class AssistantService:
                 Outcome.INSUFFICIENT_EVIDENCE,
                 reason="citations_not_grounded",
                 vector_search=found.vector_search,
+                reranked=found.reranked,
             )
         if answer.insufficient_evidence:
             return AssistantReply(
@@ -144,18 +180,23 @@ class AssistantService:
                 answer=answer.answer or None,
                 reason="model_found_no_answer",
                 vector_search=found.vector_search,
+                reranked=found.reranked,
             )
         claims = banned_claims(answer.answer)
         if claims:
             log.warning("assistant.blocked", claims=claims)
             return AssistantReply(
-                Outcome.BLOCKED, reason=",".join(claims), vector_search=found.vector_search
+                Outcome.BLOCKED,
+                reason=",".join(claims),
+                vector_search=found.vector_search,
+                reranked=found.reranked,
             )
         return AssistantReply(
             Outcome.ANSWERED,
             answer=answer.answer,
             citations=[CitedSource(hits[c.chunk_id], c.quote) for c in answer.citations],
             vector_search=found.vector_search,
+            reranked=found.reranked,
         )
 
     @staticmethod
@@ -169,11 +210,29 @@ class AssistantService:
             UntrustedPart("question", question),
         ]
 
+    def _evidence(self, found: SearchResult) -> list[SearchHit]:
+        """Grounded or silent: with reranked results, only passages the cross-encoder finds
+        relevant (or that name the asked NAFDAC number) are evidence. Without reranking the
+        search's own similarity floor is the only bar."""
+        if not found.reranked:
+            return found.hits
+        bar = self._settings.min_rerank_score
+        return [
+            hit
+            for hit in found.hits
+            if "nafdac_number" in hit.matched_by
+            or (hit.rerank_score is not None and hit.rerank_score >= bar)
+        ]
+
     @staticmethod
     def _degraded(found: SearchResult, reason: str) -> AssistantReply:
         log.info("assistant.degraded", reason=reason)
         return AssistantReply(
-            Outcome.DEGRADED, results=found.hits, reason=reason, vector_search=found.vector_search
+            Outcome.DEGRADED,
+            results=found.hits,
+            reason=reason,
+            vector_search=found.vector_search,
+            reranked=found.reranked,
         )
 
 
