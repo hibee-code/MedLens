@@ -13,6 +13,8 @@ from the field.
 * Cover the products people actually buy (antimalarials, antibiotics, analgesics), several
   manufacturers, and some known counterfeits if a regulator can share them.
 * No people, faces or receipts in the frame. Strip location data (`exiftool -all= *.jpg`).
+* Keep the photos and labels outside Git (they may show premises or stock); record where they
+  are and who may use them next to the results.
 
 ## Labelling
 
@@ -32,15 +34,21 @@ Tesseract runs in the worker image (the binary is installed there); PaddleOCR ne
 key, and spends money (about $0.0005 per photo on the fast tier).
 
 ```bash
-docker compose run --rm -v "$PWD/scripts:/app/scripts:ro" -v /path/to/photos:/data:ro \
-  worker python scripts/ocr_benchmark.py --photos /data --labels /data/labels.csv \
-  --engines tesseract,llm
-uv sync --group ocr-benchmark && \
-  uv run python scripts/ocr_benchmark.py --photos /path/to/photos --labels labels.csv --engines paddle
+make ocr-benchmark PHOTOS=/path/to/photos               # Tesseract, in the worker image
+make ocr-benchmark PHOTOS=/path/to/photos ENGINES=tesseract,llm   # + the vision LLM (costs)
+uv run --group ocr-benchmark python scripts/ocr_benchmark.py \
+  --photos /path/to/photos --labels /path/to/photos/labels.csv --engines paddle
 ```
 
+The labels file is `labels.csv` in the photo folder (template:
+`docs/templates/ocr-labels.csv`). It is checked first: a missing photo, a duplicate row or a
+value that does not parse (NAFDAC number, batch, `MM/YYYY` expiry) stops the run with the list
+of problems, since a wrong label would score a right reading as a miss.
+
 It prints, per engine, the exact-match rate of the NAFDAC number, batch number and expiry
-month, how often the brand name was found, latency (p50, p95) and cost. Record the result and
+month, how often the brand name was found, latency (p50, p95) and cost; how many photos have
+each field labelled; `enough_for_the_decision` (100 photos or more, `--min-photos`); and the
+best engine per field (ties go to the engine listed first, so list the cheapest first). Record the result and
 the decision in CLAUDE.md §9 ("Tesseract-first OCR", revisit when the benchmark is in).
 
 Without real photos, `python scripts/ocr_benchmark.py` runs on the synthetic packs in

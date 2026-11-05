@@ -164,11 +164,13 @@ class RedisSettings(_Group):
     cache_db: int = Field(default=0, ge=0, le=15)
     broker_db: int = Field(default=1, ge=0, le=15)
     result_db: int = Field(default=2, ge=0, le=15)
-    # Redis answers in milliseconds: short timeouts and one quick retry keep requests fast
-    # when it is down (callers fail open), instead of the client's default ten retries.
-    socket_timeout_seconds: float = Field(default=1.0, gt=0)
-    socket_connect_timeout_seconds: float = Field(default=0.5, gt=0)
-    retries: int = Field(default=1, ge=0, le=5)
+    # Redis answers in milliseconds: short timeouts and at most three quick retries (10-100 ms
+    # jittered backoff) keep requests fast when it is down, instead of the client's default ten
+    # retries. Caches and scan limits then fail open; sign-in limits, one-time codes and
+    # lockouts fail closed. Worst case per command: (retries + 1) x socket timeout.
+    socket_timeout_seconds: float = Field(default=1.0, gt=0, le=2)
+    socket_connect_timeout_seconds: float = Field(default=0.5, gt=0, le=1)
+    retries: int = Field(default=1, ge=0, le=3)
     max_connections: int = Field(default=50, ge=1)
 
     @model_validator(mode="after")
@@ -382,6 +384,8 @@ class KnowledgeSettings(_Group):
     max_document_bytes: int = Field(default=8 * 1024 * 1024, gt=0)
     # The assistant's own kill switch (MEDLENS_LLM__ENABLED switches off every AI feature).
     assistant_enabled: bool = True
+    # POST /assistant/ask/stream; off: it answers 404 and clients use POST /assistant/ask.
+    assistant_streaming: bool = True
     chunk_tokens: int = Field(default=400, ge=50, le=2000)
     chunk_overlap_tokens: int = Field(default=60, ge=0)
     # Candidates per retriever, results kept after fusion, and the evidence bar.

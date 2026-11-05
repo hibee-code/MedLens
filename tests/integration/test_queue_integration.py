@@ -503,7 +503,8 @@ async def test_knowledge_tasks(api: Api, worker_runtime: WorkerRuntime) -> None:
 
     assert status == "indexed"
     assert vector is not None
-    assert len(vector) == worker_runtime.settings.embeddings.text_dimension
+    assert vector["model_version"] == "fake-text-embedder-1"  # the API filters on it
+    assert len(vector["vector"]) == worker_runtime.settings.embeddings.text_dimension
     assert backfilled >= len(stored) >= 1
     assert scores[0] > scores[1]
     assert without_model == (None, 0, None)

@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
+from redis.asyncio import Redis
 from sqlalchemy import ColumnElement, Select, any_, func, literal, select, tuple_
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -31,6 +32,7 @@ from medlens.db.session import UnitOfWork
 from medlens.modules.audit.service import AuditService
 from medlens.modules.cases.models import Case, CasePriority, CaseStatus
 from medlens.modules.hitl.models import Label, LabelOutcome
+from medlens.modules.hotspots.service import invalidate_hotspots
 from medlens.modules.organizations.models import (
     Membership,
     MembershipStatus,
@@ -110,10 +112,18 @@ def open_case_for_scan(session: Session, scan_id: UUID) -> Case | None:
 # --------------------------------------------------------------------------- reviewing, in the API
 class CaseService:
     def __init__(
-        self, sessions: async_sessionmaker[AsyncSession], storage: StoragePort | None = None
+        self,
+        sessions: async_sessionmaker[AsyncSession],
+        storage: StoragePort | None = None,
+        redis: Redis | None = None,
     ) -> None:
         self._sessions = sessions
         self._storage = storage
+        self._redis = redis  # cached hotspots are invalidated when a final verdict changes
+
+    async def _verdict_changed(self) -> None:
+        if self._redis is not None:
+            await invalidate_hotspots(self._redis)
 
     async def list_page(
         self, actor: Actor, params: PageParams, *filters: ColumnElement[bool]
@@ -242,7 +252,9 @@ class CaseService:
             if override is not None:
                 await _override(session, actor, case, scan, override, override_note or "", meta)
             await uow.commit()
-            return case, scan
+        if override is not None:
+            await self._verdict_changed()
+        return case, scan
 
     async def override(
         self, actor: Actor, case_id: UUID, verdict: Verdict, note: str, meta: RequestMeta
@@ -258,7 +270,8 @@ class CaseService:
             _check_allowed(outcome, verdict, "verdict")
             await _override(uow.session, actor, case, scan, verdict, note, meta)
             await uow.commit()
-            return case, scan
+        await self._verdict_changed()
+        return case, scan
 
     async def revert_override(
         self, actor: Actor, case_id: UUID, note: str, meta: RequestMeta
@@ -285,7 +298,8 @@ class CaseService:
                 },
             )
             await uow.commit()
-            return case, scan
+        await self._verdict_changed()
+        return case, scan
 
     async def image(self, actor: Actor, case_id: UUID, meta: RequestMeta) -> bytes:
         """The scan's stored photo (already re-encoded, EXIF stripped). Audited."""

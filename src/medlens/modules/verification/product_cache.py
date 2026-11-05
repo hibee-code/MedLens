@@ -2,8 +2,8 @@
 
 Every scan looks its product up; the same few hundred products are scanned over and over.
 Misses are cached too (an unregistered number stays unregistered until the next Greenbook
-import). Entries expire after MEDLENS_VERIFICATION__PRODUCT_CACHE_SECONDS; Redis errors only
-skip the cache."""
+import). Entries expire after MEDLENS_VERIFICATION__PRODUCT_CACHE_SECONDS, and writers of product
+facts clear them (products.cache); Redis errors only skip the cache."""
 
 import json
 from uuid import UUID
@@ -11,15 +11,11 @@ from uuid import UUID
 from redis import Redis
 from redis.exceptions import RedisError
 
-from medlens.cache.keys import redis_key
+from medlens.modules.products.cache import product_facts_key
 from medlens.modules.products.models import RegistrationStatus
 from medlens.modules.verification.catalog import ProductFacts
 
 _MISSING = "none"
-
-
-def product_key(nafdac_number: str) -> str:
-    return redis_key("catalog", "product", nafdac_number)
 
 
 class ProductCache:
@@ -30,7 +26,7 @@ class ProductCache:
     def get(self, nafdac_number: str) -> tuple[bool, ProductFacts | None]:
         """(found in the cache, the product or None for an unregistered number)."""
         try:
-            value = self._redis.get(product_key(nafdac_number))
+            value = self._redis.get(product_facts_key(nafdac_number))
         except RedisError:
             return False, None
         if value is None:
@@ -62,6 +58,6 @@ class ProductCache:
             )
         )
         try:
-            self._redis.set(product_key(nafdac_number), value, ex=self._ttl)
+            self._redis.set(product_facts_key(nafdac_number), value, ex=self._ttl)
         except RedisError:
             return

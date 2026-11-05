@@ -3,7 +3,8 @@
     python scripts/export_onnx.py --out /opt/models/onnx
 
 * text: the text embedding model (multilingual-e5-small), mean pooling and normalisation inside
-  the graph, int8 weights;
+  the graph, int8 weights quantized per channel (per-tensor int8 measured 0.982 minimum cosine,
+  per channel 0.993, at the same size);
 * reranker: the cross-encoder (ms-marco-MiniLM-L-6-v2, 23M parameters), one relevance logit
   per pair, fp32 (small enough that int8 is not worth its drift);
 * image: CLIP's image tower (clip-ViT-B-32) with its projection and normalisation, fp32 (image
@@ -11,7 +12,9 @@
 
 Each model is checked against the torch original through the classes the worker uses at run
 time (medlens.adapters.onnx_models: tokenizer, preprocessing and session together); a model
-that drifts further than its tolerance fails the export, and so the image build. The output
+whose cosine similarity to the original is not above 0.99 on every sample (CLAUDE.md decision
+log) fails the export, and so the image build. tests/models/test_onnx_equivalence.py repeats the
+check on the seed's questions, documents and pack photos. The output
 directory has one folder per model: model.onnx, the tokenizer or image processor, meta.json.
 """
 
@@ -51,12 +54,14 @@ OnnxReranker = _adapters.OnnxReranker
 OnnxTextEmbedder = _adapters.OnnxTextEmbedder
 
 OPSET = 17
-TEXT_TOLERANCE = 0.98  # minimum cosine between int8 and torch embeddings
-IMAGE_TOLERANCE = 0.99  # the runtime's numpy preprocessing differs slightly from transformers'
-RERANK_TOLERANCE = 0.01  # maximum difference of sigmoid scores
+MIN_COSINE = 0.99  # every sample's cosine to the original must be above this
+RERANK_TOLERANCE = 0.01  # and reranker scores (sigmoid) may differ by at most this
 
 SAMPLE_TEXTS = [
     "query: Has NAFDAC issued an alert for counterfeit Coartem?",
+    "query: How do I report a suspected counterfeit medicine?",
+    "passage: Pharmacists should quarantine affected packs, stop dispensing them and report to the "
+    "nearest NAFDAC office with the pack, the receipt and where it was bought.",
     "passage: NAFDAC alerts the public to counterfeit Augmentin 1 G tablets in Lagos.",
     "passage: Batch No: B2309-14. Expiry date: 12/2027. Store below 30 degrees.",
     "query: Are other batches of ADALAT LA affected by the recall?",
@@ -74,7 +79,7 @@ def _export(module: torch.nn.Module, args: tuple[Any, ...], path: Path, **names:
 
 
 def _quantize(source: Path, target: Path) -> None:
-    quantize_dynamic(str(source), str(target), weight_type=QuantType.QInt8)
+    quantize_dynamic(str(source), str(target), weight_type=QuantType.QInt8, per_channel=True)
 
 
 def _write_meta(directory: Path, **meta: Any) -> None:
@@ -119,12 +124,12 @@ def export_text(name: str, out: Path, scratch: Path) -> dict[str, Any]:
         reference = wrapped(batch["input_ids"], batch["attention_mask"]).numpy()
     tokenizer.save_pretrained(out)
     dimension = int(reference.shape[1])
-    meta: dict[str, Any] = {"source": name, "dimension": dimension, "quantized": "int8"}
+    meta: dict[str, Any] = {"source": name, "dimension": dimension, "quantized": "int8-per-channel"}
     _write_meta(out, **meta)
     runtime = OnnxTextEmbedder(out, dimension)
     exported = np.asarray(runtime._encode(SAMPLE_TEXTS))
     cosine = float((reference * exported).sum(-1).min())
-    if cosine < TEXT_TOLERANCE:
+    if cosine <= MIN_COSINE:
         raise SystemExit(f"{name}: int8 export drifts (min cosine {cosine:.4f})")
     meta["min_cosine"] = round(cosine, 5)
     _write_meta(out, **meta)
@@ -183,8 +188,9 @@ def export_reranker(name: str, out: Path, scratch: Path) -> dict[str, Any]:
     runtime = OnnxReranker(out)
     exported = np.asarray([runtime.rerank(query, [passage])[0] for query, passage in SAMPLE_PAIRS])
     drift = float(np.abs(reference - exported).max())
-    if drift > RERANK_TOLERANCE:
-        raise SystemExit(f"{name}: export drifts (max score difference {drift:.5f})")
+    cosine = float(reference @ exported / (np.linalg.norm(reference) * np.linalg.norm(exported)))
+    if drift > RERANK_TOLERANCE or cosine <= MIN_COSINE:
+        raise SystemExit(f"{name}: export drifts (score difference {drift:.5f}, cosine {cosine})")
     meta["max_score_drift"] = round(drift, 6)
     _write_meta(out, **meta)
     return meta
@@ -236,7 +242,7 @@ def export_image(name: str, out: Path, scratch: Path) -> dict[str, Any]:
     runtime = OnnxImageEmbedder(out, int(reference.shape[1]))
     exported = np.asarray([runtime._embed(image) for image in images])
     cosine = float((reference * exported).sum(-1).min())
-    if cosine < IMAGE_TOLERANCE:
+    if cosine <= MIN_COSINE:
         raise SystemExit(f"{name}: export drifts (min cosine {cosine:.5f})")
     meta["min_cosine"] = round(cosine, 6)
     _write_meta(out, **meta)

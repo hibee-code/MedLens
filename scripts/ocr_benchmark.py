@@ -12,6 +12,11 @@ Engines: tesseract (needs the tesseract binary: run in the worker image), paddle
 `ocr-benchmark` dependency group), llm (needs MEDLENS_LLM__ENABLED=true and an API key; spends
 money). Unavailable engines are skipped and say why.
 
+The labels are checked first (a photo that is missing, a NAFDAC number, batch or expiry that
+cannot be read as one): problems are listed and the run stops, since a wrong label scores a
+right reading as a miss. The report says whether the sample is large enough for the decision
+(--min-photos, 100) and which engine reads each field best.
+
 The synthetic packs in seed/test_packs work as a smoke test only. The decision needs 100+ real,
 labelled photos of Nigerian packs (docs/ocr-benchmark.md).
 """
@@ -89,6 +94,9 @@ def _normalise(value: str, normaliser: Callable[[str], str]) -> str | None:
         return None
 
 
+REQUIRED_COLUMNS = ("file", "nafdac_number", "brand", "batch_number", "expiry")
+
+
 def load_labels(path: Path) -> list[Label]:
     with path.open(newline="", encoding="utf-8") as handle:
         return [
@@ -101,6 +109,50 @@ def load_labels(path: Path) -> list[Label]:
             )
             for row in csv.DictReader(handle)
         ]
+
+
+def label_problems(path: Path, photos: Path) -> list[str]:
+    """Rows that would make the benchmark wrong: unknown columns, missing photos, duplicates,
+    values that do not parse as what they claim to be. Empty fields are fine (not printed)."""
+    with path.open(newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        missing = [column for column in REQUIRED_COLUMNS if column not in (reader.fieldnames or [])]
+        if missing:
+            return [f"missing columns: {', '.join(missing)}"]
+        rows = list(reader)
+    problems: list[str] = []
+    seen: set[str] = set()
+    for line, row in enumerate(rows, start=2):
+        name = row["file"].strip()
+        if name in seen:
+            problems.append(f"line {line}: {name} is labelled twice")
+        seen.add(name)
+        if not (photos / name).is_file():
+            problems.append(f"line {line}: no photo {name}")
+        checks = (
+            ("nafdac_number", normalize_nafdac_number),
+            ("batch_number", normalize_batch_number),
+        )
+        for column, normaliser in checks:
+            value = row[column].strip()
+            if value and _normalise(value, normaliser) is None:
+                problems.append(f"line {line}: {column} {value!r} does not parse")
+        expiry = row["expiry"].strip()
+        if expiry and parse_expiry(expiry) is None:
+            problems.append(f"line {line}: expiry {expiry!r} does not parse (MM/YYYY)")
+    if not rows:
+        problems.append("no rows")
+    return problems
+
+
+def best_per_field(engines: list[dict[str, Any]]) -> dict[str, str | None]:
+    """The engine with the highest rate per field (ties: the first, so list the cheapest first)."""
+    scored = [engine for engine in engines if "skipped" not in engine]
+    fields = ("nafdac_number", "batch_number", "expiry_month", "brand_found")
+    return {
+        field: max(scored, key=lambda engine: engine[field])["engine"] if scored else None
+        for field in fields
+    }
 
 
 def grade(score: Score, label: Label, extraction: Extraction, text: str) -> None:
@@ -220,11 +272,27 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--photos", type=Path, default=ROOT / "seed" / "test_packs")
     parser.add_argument("--labels", type=Path, default=None)
     parser.add_argument("--engines", default="tesseract,paddle,llm")
+    parser.add_argument("--min-photos", type=int, default=100)
     args = parser.parse_args(argv)
-    labels = load_labels(args.labels or args.photos / "expected.csv")
+    labels_path = args.labels or args.photos / "expected.csv"
+    problems = label_problems(labels_path, args.photos)
+    if problems:
+        sys.stderr.write(f"{labels_path}: fix these labels first\n")
+        sys.stderr.writelines(f"  {problem}\n" for problem in problems)
+        return 2
+    labels = load_labels(labels_path)
+    engines = [run(engine.strip(), labels, args.photos) for engine in args.engines.split(",")]
     report = {
         "photos": len(labels),
-        "engines": [run(engine.strip(), labels, args.photos) for engine in args.engines.split(",")],
+        "enough_for_the_decision": len(labels) >= args.min_photos,
+        "labelled": {
+            "nafdac_number": sum(bool(label.nafdac_number) for label in labels),
+            "batch_number": sum(bool(label.batch_number) for label in labels),
+            "expiry": sum(label.expiry is not None for label in labels),
+            "brand": sum(bool(label.brand) for label in labels),
+        },
+        "engines": engines,
+        "best_per_field": best_per_field(engines),
     }
     json.dump(report, sys.stdout, indent=2)
     sys.stdout.write("\n")

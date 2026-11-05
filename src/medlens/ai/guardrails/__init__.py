@@ -11,9 +11,17 @@ import re
 import unicodedata
 from collections.abc import Mapping
 
+from medlens.core.pii import scrub_pii
+
+__all__ = [
+    "banned_claims",
+    "normalise",
+    "quote_in_text",
+    "scrub_pii",
+    "wrap_untrusted",
+]
+
 _CLOSING_TAG = re.compile(r"</\s*untrusted", re.IGNORECASE)
-_EMAIL = re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")
-_PHONE = re.compile(r"(?<![\w])(?:\+?234|0)[\s-]?[789][01]\d(?:[\s-]?\d){7}(?![\w])")
 _BANNED_PATTERNS = {
     "safety_claim": (
         r"\b(?:is|are|it's|it is)\s+(?:completely\s+|totally\s+)?safe\b",
@@ -42,11 +50,6 @@ def wrap_untrusted(text: str, *, kind: str, attrs: Mapping[str, str] | None = No
     opening = f"<untrusted_{kind}{' ' + rendered if rendered else ''}>"
     body = _CLOSING_TAG.sub("&lt;/untrusted", text)
     return f"{opening}\n{body}\n</untrusted_{kind}>"
-
-
-def scrub_pii(text: str) -> str:
-    """Replace e-mail addresses and Nigerian phone numbers before text enters a prompt."""
-    return _PHONE.sub("[phone]", _EMAIL.sub("[email]", text))
 
 
 def banned_claims(text: str) -> list[str]:

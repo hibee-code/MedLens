@@ -329,8 +329,9 @@ class Api:
 
 
 @asynccontextmanager
-async def open_api(settings: Settings) -> AsyncIterator[Api]:
-    """The app (plus the permission probe routes) running on ``settings``, Redis flushed."""
+async def open_api(settings: Settings, *, flush_redis: bool = True) -> AsyncIterator[Api]:
+    """The app (plus the permission probe routes) running on ``settings``, Redis flushed
+    (``flush_redis=False`` where Redis is unreachable on purpose)."""
     app = create_app(settings)
     app.include_router(probe_router())
     storage = InMemoryStorage()
@@ -342,7 +343,8 @@ async def open_api(settings: Settings) -> AsyncIterator[Api]:
     engine = create_sync_engine(settings.database, application_name="medlens-tests")
     try:
         async with app.router.lifespan_context(app):
-            await app.state.resources.redis.flushdb()
+            if flush_redis:
+                await app.state.resources.redis.flushdb()
             transport = httpx.ASGITransport(app=app)
             async with httpx.AsyncClient(
                 transport=transport, base_url="http://testserver"

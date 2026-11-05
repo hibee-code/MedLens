@@ -27,6 +27,7 @@ from medlens.modules.verification.product_cache import ProductCache
 from medlens.modules.verification.repository import SqlCatalog
 from medlens.ports.llm import LLMUnavailableError
 from medlens.workers import runtime
+from tests.support import build_settings
 
 onnx_models = pytest.importorskip("medlens.adapters.onnx_models")  # the `ml` group
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "onnx"
@@ -132,6 +133,9 @@ class AsyncDictRedis:
     async def get(self, key: str) -> str | None:
         return self.data.get(key)
 
+    async def mget(self, keys: list[str]) -> list[str | None]:
+        return [self.data.get(key) for key in keys]
+
     async def set(self, key: str, value: str, ex: int) -> None:
         self.data[key] = value
 
@@ -162,8 +166,47 @@ async def test_question_embeddings_are_cached_per_model() -> None:
     await off.embed_query("any alert for Coartem?")
 
     assert first == second
+    assert first is not None
+    assert first.model_version == "fake-text-embedder-1"
     assert len(inner.calls) == 3  # once per model, and once with the cache off
     assert all("Coartem" not in key for key in redis.data)  # questions are hashed
+
+
+async def test_a_new_model_version_invalidates_cached_question_embeddings() -> None:
+    from medlens.adapters.fakes import FakeTextEmbedder
+    from medlens.cache.keys import TEXT_MODEL_VERSION_KEY
+
+    inner = FakeQueryEmbedder(FakeTextEmbedder())
+    redis = AsyncDictRedis()
+    cached = CachedQueryEmbedder(inner, redis, model="e5", ttl_seconds=60)  # type: ignore[arg-type]
+    redis.data[TEXT_MODEL_VERSION_KEY] = "fake-text-embedder-1"  # what the workers run
+
+    await cached.embed_query("recall of Adalat?")
+    await cached.embed_query("recall of Adalat?")
+    assert len(inner.calls) == 1
+
+    redis.data[TEXT_MODEL_VERSION_KEY] = "e5@onnx-int8-per-channel"  # workers now run another
+    await cached.embed_query("recall of Adalat?")
+    assert len(inner.calls) == 2  # the old entry is ignored
+
+
+class AsyncDownRedis:
+    def __getattr__(self, name: str) -> Any:
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        async def fail(*args: Any, **kwargs: Any) -> Any:
+            raise RedisConnectionError("down")
+
+        return fail
+
+
+async def test_question_embeddings_work_while_redis_is_down() -> None:
+    from medlens.adapters.fakes import FakeTextEmbedder
+
+    inner = FakeQueryEmbedder(FakeTextEmbedder())
+    cached = CachedQueryEmbedder(inner, AsyncDownRedis(), model="e5", ttl_seconds=60)  # type: ignore[arg-type]
+
+    assert await cached.embed_query("q") is not None
 
 
 async def test_unavailable_embeddings_are_not_cached() -> None:
@@ -329,3 +372,101 @@ async def test_a_failure_ends_the_stream_with_an_error_event() -> None:
     assert name == "error"
     assert data["type"] == "urn:medlens:problem:internal-error"
     assert data["status"] == 500
+
+
+# ------------------------------------------------------------------------- invalidation, Redis down
+def test_cached_answers_are_keyed_by_what_the_model_sees() -> None:
+    """Content-addressed: a changed or withdrawn document, a new prompt version or a caller who
+    sees other documents (regulator-only ones) gives another key. Nothing about the asker is in
+    the key or the value: the question is scrubbed and answers depend only on the documents."""
+    from medlens.ai.gateway.cache import answer_key
+    from medlens.ai.gateway.providers import ProviderRequest
+
+    def request(*documents: str) -> ProviderRequest:
+        content = [{"type": "text", "text": text} for text in (*documents, "the question")]
+        return ProviderRequest(
+            model="m", system="s", messages=({"role": "user", "content": content},),
+            schema={}, max_tokens=100, effort="low",
+        )  # fmt: skip
+
+    professional = request("public alert v1")
+    assert answer_key(professional, "v1") == answer_key(request("public alert v1"), "v1")
+    assert answer_key(professional, "v1") != answer_key(request("public alert v2"), "v1")
+    assert answer_key(professional, "v1") != answer_key(professional, "v2")
+    assert answer_key(professional, "v1") != answer_key(
+        request("public alert v1", "regulator-only memo"), "v1"
+    )
+
+
+async def test_answers_work_while_redis_is_down() -> None:
+    cache = AnswerCache(AsyncDownRedis(), ttl_seconds=60)  # type: ignore[arg-type]
+
+    assert await cache.get("key") is None
+    await cache.put("key", "text")  # no error
+
+
+class SyncDownRedis:
+    def __getattr__(self, name: str) -> Any:
+        from redis.exceptions import ConnectionError as RedisConnectionError
+
+        def fail(*args: Any, **kwargs: Any) -> Any:
+            raise RedisConnectionError("down")
+
+        return fail
+
+
+def test_products_work_while_redis_is_down() -> None:
+    product = ProductFacts(uuid4(), "A4-1234", "Panadol", "Paracetamol", RegistrationStatus.ACTIVE)
+    cache = ProductCache(SyncDownRedis(), ttl_seconds=60)  # type: ignore[arg-type]
+
+    cache.put("A4-1234", product)  # no error
+    assert cache.get("A4-1234") == (False, None)  # a miss: the database answers
+
+
+def test_a_register_import_clears_cached_products(monkeypatch: Any) -> None:
+    from medlens.modules.products.cache import clear_product_facts, product_facts_key
+    from medlens.seed import greenbook
+
+    class ScanRedis(DictRedis):
+        def scan_iter(self, match: str, count: int) -> Any:
+            prefix = match.rstrip("*")
+            return iter([key for key in list(self.data) if key.startswith(prefix)])
+
+        def unlink(self, *keys: str) -> int:
+            for key in keys:
+                self.data.pop(key, None)
+            return len(keys)
+
+        def close(self) -> None:
+            pass
+
+    redis = ScanRedis()
+    cache = ProductCache(redis, ttl_seconds=60)  # type: ignore[arg-type]
+    for number in ("A4-0001", "A4-0002", "Z9-000003"):
+        cache.put(number, None)
+    redis.data["medlens:v1:other"] = "kept"
+
+    assert clear_product_facts(redis) == 3  # type: ignore[arg-type]
+    assert redis.data == {"medlens:v1:other": "kept"}
+    assert product_facts_key("A4-0001").startswith("medlens:v1:catalog:product:")
+    assert clear_product_facts(SyncDownRedis()) == 0  # type: ignore[arg-type]
+
+    cache.put("A4-0001", None)
+    monkeypatch.setattr("medlens.cache.redis.create_sync_redis_client", lambda settings, db: redis)
+    greenbook.clear_cached_products(build_settings())
+    assert redis.data == {"medlens:v1:other": "kept"}
+
+
+async def test_hotspot_caching_survives_redis_being_down() -> None:
+    from medlens.cache.aside import cached_json
+    from medlens.modules.hotspots.service import _generation, invalidate_hotspots
+
+    down = AsyncDownRedis()
+
+    await invalidate_hotspots(down)  # type: ignore[arg-type]  # no error: entries expire anyway
+    assert await _generation(down) == "unavailable"  # type: ignore[arg-type]
+
+    async def compute() -> dict[str, str]:
+        return {"clusters": "fresh"}
+
+    assert await cached_json(down, "key", 60, compute) == ({"clusters": "fresh"}, False)  # type: ignore[arg-type]

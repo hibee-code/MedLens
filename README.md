@@ -63,17 +63,21 @@ Step by step:
 make up              # full stack (API on 127.0.0.1:8000, docs at /docs)
 make migrate         # alembic upgrade head
 make seed SEED_ARGS="--staff-password <a long password>"   # products, batches, users, documents
-make embeddings      # embed seeded reference images and documents (workers must be running)
+make embeddings      # embed documents and reference images that lack vectors (workers must run)
 make eval            # scan accuracy and assistant metrics (see below)
 make check           # lint, mypy --strict, all tests with coverage (needs Docker)
 make audit           # pip-audit on the locked dependencies, bandit on src
-make ci              # check + audit (CI also runs the eval and builds both images)
+make ci              # check + audit (CI also runs the eval, the model test and both images)
+make onnx test-models          # export the models locally, compare them with the originals
+make retrieval-eval            # recall/MRR per reranker, evidence-bar calibration
+make ocr-benchmark PHOTOS=dir  # OCR engines on labelled photos (docs/ocr-benchmark.md)
 ```
 
 Models: the worker image exports CLIP ViT-B/32 (image, 512-d), multilingual-e5-small (text,
-384-d, int8) and the ms-marco-MiniLM-L-6-v2 reranker to ONNX while it builds (the `models`
-stage; parity with the originals is checked there) and runs them on ONNX Runtime, without
-torch and offline. Each of the `MEDLENS_QUEUE__WORKER_CONCURRENCY=2` pool processes uses about
+384-d, int8 per channel) and the ms-marco-MiniLM-L-6-v2 reranker to ONNX while it builds (the
+`models` stage, which fails unless every sample's cosine similarity to the original is above
+0.99) and runs them on ONNX Runtime, without torch and offline. `make test-models` (a CI job)
+repeats the comparison on the seed's chunks, questions and pack photos. Each of the `MEDLENS_QUEUE__WORKER_CONCURRENCY=2` pool processes uses about
 1.1 GB at rest and up to about 1.9 GB after large batches;
 `MEDLENS_EMBEDDINGS__ONNX_MEMORY_ARENA=false` keeps it near 1 GB at some speed cost. For local
 work outside Docker: `make install-ml` (adds ONNX Runtime and the
@@ -136,10 +140,14 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
   passages are not shown to the model, and with none left the answer is "not enough evidence"
   (`weak_evidence`) without a model call. Embedding similarity alone cannot do this: relevant
   and irrelevant passages both score 0.80-0.92.
-* **Caches.** Product facts in the worker (60 s, including "not registered"), question
-  embeddings (a day, per model), assistant answers (an hour, keyed by model, prompt version
-  and the exact messages, so a new document or prompt version misses the cache; the kill switch
-  and the per-feature switch are checked before the cache, and hits are not metered).
+* **Caches.** Each has a TTL, is invalidated on change, works with Redis down and keeps nothing
+  user-specific in a shared key. Product facts in the worker (60 s, including "not
+  registered"; cleared by the register import and the seed). Question embeddings (a day; an
+  entry made by another model version than the workers run is ignored). Assistant answers (an
+  hour; keyed by model, prompt version and the exact messages, so a changed document, a new
+  prompt version or a caller who sees other documents misses; the kill switch is checked
+  before the cache and hits are not metered). Hotspots (5 minutes, per jurisdiction; a case
+  decision that changes a final verdict invalidates them).
 * **Privacy.** Photos are re-encoded without metadata; locations are rounded to about 1 km;
   phone numbers are encrypted; personal data is scrubbed from documents and questions before
   embedding or prompting; manufacturers see only aggregates.
@@ -161,12 +169,17 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
 * **Tracing and errors.** Set `MEDLENS_OBSERVABILITY__OTLP_ENDPOINT` (for example
   `http://otel-collector:4318`) to export traces of requests, SQL, Redis, outgoing HTTP and
   Celery tasks; `MEDLENS_OBSERVABILITY__TRACES_SAMPLE_RATE` samples them (0.1). Log lines carry
-  `trace_id` and `span_id`. `MEDLENS_OBSERVABILITY__SENTRY_DSN` turns on Sentry for errors only,
-  without request bodies, local variables or personal data.
-* **Redis.** Every call has a 1 s timeout and one retry with jittered backoff: an outage costs
-  milliseconds per request, and the fail-open rules in the decision log apply.
+  `trace_id` and `span_id`. `MEDLENS_OBSERVABILITY__SENTRY_DSN` turns on Sentry for errors only.
+  Neither sends personal data: spans lose client IPs, user agents, query strings, Redis
+  arguments and exception text, Sentry events lose headers, cookies, bodies and the user, and
+  e-mail addresses, phone numbers and tokens are masked in both (a test sends some and checks).
+* **Redis.** Every call has a 1 s timeout and at most 3 retries (one by default) with jittered
+  backoff, so an outage costs milliseconds per request. Caches and scan limits then fail open;
+  sign-in limits, one-time codes and lockouts fail closed (503 with Retry-After).
 * **CI.** `.github/workflows/ci.yml`: lint and types, tests with coverage, pip-audit and
-  bandit, the scan eval (fails under 90% accuracy), and both image builds.
+  bandit, the scan eval (fails under 90% accuracy), the ONNX exports against the original
+  models, and both image builds. CI holds no API keys: tests marked `live` are skipped and the
+  evals use stand-ins. Model downloads are cached.
 
 ## Evaluation
 
@@ -179,17 +192,25 @@ pack's printed fields from the CSV). Where the models are installed (the worker 
 `make install-ml` and `make onnx`), the assistant's retrieval uses vectors and the reranker,
 as in production; the report says which.
 
-`scripts/ocr_benchmark.py` compares the readers (Tesseract, PaddleOCR, the vision LLM) on
-labelled photos through the pipeline's own parsers ([docs/ocr-benchmark.md](docs/ocr-benchmark.md)).
-On the synthetic packs it is a smoke test; the OCR decision needs real photos.
+`make retrieval-eval` (`scripts/retrieval_eval.py`) measures search per reranker (recall@1,
+@3, @6 and MRR, against the fused order without one) and calibrates the assistant's evidence
+bar. On the seed's ten synthetic questions every ranking scores 100: real pharmacist questions
+are needed to tell rankers apart and to check the bar ([docs/assistant-eval.md](docs/assistant-eval.md);
+`scripts/eval.py --questions FILE` runs the answers too).
+
+`make ocr-benchmark PHOTOS=dir` (`scripts/ocr_benchmark.py`) compares the readers (Tesseract,
+PaddleOCR, the vision LLM) on labelled photos through the pipeline's own parsers, after checking
+the labels ([docs/ocr-benchmark.md](docs/ocr-benchmark.md)). On the synthetic packs it is a
+smoke test; the OCR decision needs 100+ real photos.
 
 ## Roadmap to the production plan
 
-1. Run the OCR benchmark on 100+ labelled real pack photos (the script is ready; the photos
-   are not).
-2. Real reference images from manufacturers (the seed has synthetic ones for five products, so
-   the visual signal works end to end), then a calibrated model scorer (LightGBM) trained on
-   lab-confirmed labels, shadowed against the rule-based scorer.
+1. Run the OCR benchmark on 100+ labelled real pack photos, and the assistant eval on 50+
+   real pharmacist questions (the tooling is ready; the photos and questions are not).
+2. Real reference images from manufacturers, approved through the review flow (synthetic ones
+   are for tests only, so the visual signal is unavailable in local and demo stacks until
+   then), then a calibrated model scorer (LightGBM) trained on lab-confirmed labels, shadowed
+   against the rule-based scorer.
 3. Investigation agents with human approval for consequential actions (publishing alerts,
    notifying manufacturers) and a Model Context Protocol server for regulators' tools.
 4. State boundaries (derive the state from coordinates), regulator audit access, bulk stock

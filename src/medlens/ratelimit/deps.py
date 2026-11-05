@@ -3,7 +3,8 @@ run before the request's other dependencies, such as decoding an uploaded image.
 
     guest scans      MEDLENS_RATELIMIT__GUEST_SCANS_PER_MINUTE per client IP
     signed-in scans  MEDLENS_RATELIMIT__USER_SCANS_PER_MINUTE per user or API key
-    sign-in          MEDLENS_RATELIMIT__LOGINS_PER_MINUTE per client IP (codes, passwords, MFA)
+    sign-in          MEDLENS_RATELIMIT__LOGINS_PER_MINUTE per client IP (codes, passwords, MFA);
+                     fails closed (503) while Redis is down, the others fail open
     assistant        MEDLENS_RATELIMIT__ASSISTANT_PER_MINUTE per user
 
 Client IPs are kept only as keyed hashes, even in Redis.
@@ -33,11 +34,14 @@ def _principal_key(principal: Principal) -> str:
     return f"user:{principal.user_id}"
 
 
-async def _enforce(request: Request, bucket: str, subject: str, limit: int) -> None:
+async def _enforce(
+    request: Request, bucket: str, subject: str, limit: int, *, fail_open: bool = True
+) -> None:
     settings: Settings = get_app_settings(request)
     if not settings.ratelimit.enabled:
         return
-    retry = await get_resources(request).rate_limiter.retry_after(bucket, subject, limit=limit)
+    limiter = get_resources(request).rate_limiter
+    retry = await limiter.retry_after(bucket, subject, limit=limit, fail_open=fail_open)
     if retry is not None:
         raise RateLimited("Too many requests. Try again in a moment.", retry_after_seconds=retry)
 
@@ -55,7 +59,9 @@ async def limit_scans(
 
 
 async def limit_logins(request: Request, settings: SettingsDep) -> None:
-    await _enforce(request, "login", _client(request), settings.ratelimit.logins_per_minute)
+    await _enforce(
+        request, "login", _client(request), settings.ratelimit.logins_per_minute, fail_open=False
+    )
 
 
 async def limit_assistant(

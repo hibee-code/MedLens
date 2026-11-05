@@ -24,14 +24,8 @@ def test_refuses_deployed_environments(
     assert f"refusing to seed a {environment} database" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize(("flags", "with_images"), [([], True), (["--no-images"], False)])
 def test_seeds_through_the_sync_engine(
-    monkeypatch: pytest.MonkeyPatch,
-    settings_factory,
-    capsys,
-    tmp_path: Path,
-    flags: list[str],
-    with_images: bool,
+    monkeypatch: pytest.MonkeyPatch, settings_factory, capsys, tmp_path: Path
 ) -> None:
     calls: dict[str, Any] = {}
 
@@ -48,22 +42,19 @@ def test_seeds_through_the_sync_engine(
         data_dir: Path,
         staff_password: str | None,
         reset_staff_logins: bool,
-        storage: object | None,
     ) -> SeedSummary:
         calls["seeded"] = (session, data_dir)
-        calls["images"] = storage is not None
         return SeedSummary(products=43, organizations=35, batches=10, users=9, memberships=6)
 
     monkeypatch.setattr(cli, "get_settings", lambda: settings_factory(app={"environment": "local"}))
     monkeypatch.setattr(cli, "create_sync_engine", lambda *a, **k: FakeEngine())
     monkeypatch.setattr(cli, "create_sync_session_factory", lambda engine: "factory")
-    monkeypatch.setattr(cli, "create_sync_s3_client", lambda settings: "s3")
     monkeypatch.setattr(cli, "sync_session_scope", fake_scope)
     monkeypatch.setattr(cli, "run_seed", fake_run_seed)
-    monkeypatch.setattr("sys.argv", ["medlens.seed", "--data-dir", str(tmp_path), *flags])
+    monkeypatch.setattr("sys.argv", ["medlens.seed", "--data-dir", str(tmp_path)])
 
     assert cli.main() == 0
-    assert calls == {"seeded": ("session", tmp_path), "images": with_images, "disposed": True}
+    assert calls == {"seeded": ("session", tmp_path), "disposed": True}
     assert "seeded 43 products, 35 organizations" in capsys.readouterr().out
 
 

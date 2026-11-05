@@ -1,6 +1,8 @@
 """Tracing and error reporting: off unless configured; spans for requests, logs joined to them;
 Sentry without personal data. Redis clients fail fast."""
 
+import json
+import logging
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -131,6 +133,7 @@ def test_the_logging_pipeline_includes_trace_ids(settings: Settings) -> None:
     processors = structlog.get_config()["processors"]
 
     assert telemetry.add_trace_context in processors
+    assert logging.getLogger("httpx").level == logging.WARNING  # no URLs with query strings
 
 
 # ------------------------------------------------------------------------- Redis clients
@@ -163,3 +166,112 @@ def test_redis_retries_are_bounded_by_settings() -> None:
 
     assert async_retry._retries == 2
     assert sync_retry._retries == 2
+
+
+# ------------------------------------------------------------------------- no personal data
+PHONE, LOCAL_PHONE, EMAIL = "+2348031234567", "08031234567", "ada.obi@example.ng"
+TOKEN = "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhZGEifQ.c2lnbmF0dXJlLXZhbHVl"  # pragma: allowlist secret
+CLIENT_IP, AGENT = "203.0.113.7", "MedLensPiiProbe/9.9"
+PERSONAL = (PHONE, LOCAL_PHONE, EMAIL, TOKEN, CLIENT_IP, AGENT, "Ada Obi")  # name: body only
+
+
+def leaks(text: str) -> list[str]:
+    return [value for value in PERSONAL if value in text]
+
+
+def pii_app(settings: Settings) -> Any:
+    """The real app plus one route that drags personal data through errors and Redis."""
+    import sentry_sdk
+    from fastapi import Request
+    from opentelemetry import trace
+
+    app = create_app(settings)
+
+    @app.post("/api/v1/pii-probe")
+    async def probe(request: Request) -> dict[str, str]:
+        body = await request.json()
+        tracer = trace.get_tracer("probe", tracer_provider=telemetry._state["provider"])
+        with tracer.start_as_current_span("redis SET") as span:  # as the Redis instrumentation
+            span.set_attribute("db.system", "redis")
+            span.set_attribute("db.statement", f"SET otp:{body['phone']} {body['email']}")
+        sentry_sdk.set_user({"email": body["email"], "ip_address": CLIENT_IP})
+        sentry_sdk.add_breadcrumb(message=f"code sent to {body['phone']}")
+        try:
+            raise RuntimeError(f"sign-in failed for <{body['email']}> {PHONE}")
+        except RuntimeError as exc:
+            trace.get_current_span().record_exception(exc)
+            sentry_sdk.capture_exception(exc)
+        sentry_sdk.capture_message(f"Bearer {TOKEN} used from {LOCAL_PHONE}")
+        return {"ok": "yes"}
+
+    return app
+
+
+async def send_personal_data(app: Any) -> None:
+    transport = httpx.ASGITransport(app=app, client=(CLIENT_IP, 40000))
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        await client.post(
+            f"/api/v1/pii-probe?phone={PHONE}&email={EMAIL}",
+            json={"phone": PHONE, "email": EMAIL, "name": "Ada Obi"},
+            headers={"Authorization": f"Bearer {TOKEN}", "User-Agent": AGENT},
+        )
+
+
+async def test_traces_carry_no_personal_data(traced: Settings, spans: InMemorySpanExporter) -> None:
+    await send_personal_data(pii_app(traced))
+    telemetry.flush()
+
+    exported = [
+        {
+            "name": span.name,
+            "attributes": dict(span.attributes or {}),
+            "events": [dict(event.attributes or {}) for event in span.events],
+        }
+        for span in spans.get_finished_spans()
+    ]
+    text = json.dumps(exported, default=str)
+    assert any("/api/v1/pii-probe" in item["name"] for item in exported)  # still useful
+    assert any(item["attributes"].get("db.statement") == "SET" for item in exported)
+    assert leaks(text) == []
+
+
+async def test_error_reports_carry_no_personal_data(settings_factory: Any) -> None:
+    import sentry_sdk
+    from sentry_sdk.envelope import Envelope
+    from sentry_sdk.transport import Transport
+
+    sent: list[str] = []
+
+    class Capture(Transport):
+        def capture_envelope(self, envelope: Envelope) -> None:
+            sent.append(envelope.serialize().decode("utf-8", "replace"))
+
+    dsn = SecretStr("https://key@sentry.example/1")  # pragma: allowlist secret
+    settings = settings_factory(observability={"sentry_dsn": dsn})
+    sentry_sdk.init(**telemetry.sentry_options(settings, "api"), transport=Capture())
+    try:
+        await send_personal_data(pii_app(settings_factory()))  # the app must not re-init Sentry
+        sentry_sdk.flush()
+    finally:
+        sentry_sdk.get_client().close()
+        sentry_sdk.init()  # no DSN: off again
+
+    text = "\n".join(sent)
+    assert "sign-in failed for" in text  # the errors were reported...
+    assert "/api/v1/pii-probe" in text
+    assert leaks(text) == []  # ...without the personal data
+    assert '"release":"medlens@' in text  # versions are not mistaken for addresses
+
+
+def test_the_scrubbers_mask_contact_details_and_tokens() -> None:
+    from medlens.core.pii import scrub_secrets_and_pii
+
+    masked = scrub_secrets_and_pii(f"{EMAIL} {PHONE} 0803 123 4567 Bearer {TOKEN} {TOKEN}")
+
+    assert masked == "[email] [phone] [phone] Bearer [token] [token]"
+    assert scrub_secrets_and_pii("ApiKey mlk_live_abc.def") == "ApiKey [redacted]"
+    assert telemetry.redact_attributes(None) == {}
+    assert telemetry.redact_attributes({"http.target": "/a?b=1", "tags": ["x", EMAIL]}) == {
+        "http.target": "/a",
+        "tags": ("x", "[email]"),
+    }

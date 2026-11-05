@@ -162,6 +162,8 @@ addopts = ["-ra", "--strict-markers", "--strict-config", "--import-mode=importli
 markers = [
     "integration: needs Docker; starts real services with testcontainers",
     "e2e: runs against a full docker compose stack",
+    "models: real models against their ONNX exports (MEDLENS_MODEL_TESTS=1, `make onnx`)",
+    "live: calls paid external services (MEDLENS_LIVE_TESTS=1 and ANTHROPIC_API_KEY; never in CI)",
 ]
 
 [tool.bandit]

@@ -7,7 +7,9 @@ import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from sqlalchemy.orm import Session
 
@@ -25,7 +27,29 @@ from medlens.modules.hotspots.repository import (
 from medlens.modules.rbac import policies
 from medlens.modules.rbac.access import Actor
 
+log = structlog.stdlib.get_logger(__name__)
 CACHE_SECONDS = 300
+# Part of every cache key: bumping it (a final verdict changed) invalidates every cached result.
+# New scans reach the cache within CACHE_SECONDS.
+GENERATION_KEY = redis_key("hotspots", "generation")
+
+
+async def invalidate_hotspots(redis: Redis) -> None:
+    """After a final verdict changes (case decisions). Best effort: entries expire anyway."""
+    try:
+        await redis.incr(GENERATION_KEY)
+    except RedisError as exc:
+        log.warning("hotspots.invalidate_failed", error=type(exc).__name__)
+
+
+async def _generation(redis: Redis) -> str:
+    try:
+        value = await redis.get(GENERATION_KEY)
+    except RedisError:
+        return "unavailable"  # the cache is skipped too
+    return value.decode() if isinstance(value, bytes) else str(value or 0)
+
+
 DEFAULT_DAYS = 7
 DEFAULT_EPS_M = 2000.0
 DEFAULT_MIN_POINTS = 3
@@ -83,7 +107,12 @@ class HotspotService:
         )
         params = {"days": days, "state": query.state, "eps_m": eps_m, "min_points": min_points}
         fingerprint = json.dumps(
-            {**params, "scope": None if scope is None else sorted(scope)}, sort_keys=True
+            {
+                **params,
+                "scope": None if scope is None else sorted(scope),  # never shared across areas
+                "generation": await _generation(self._redis),
+            },
+            sort_keys=True,
         )
         key = redis_key("hotspots", hashlib.sha256(fingerprint.encode()).hexdigest()[:32])
 

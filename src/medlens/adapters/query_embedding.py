@@ -1,7 +1,8 @@
 """The API's access to the worker's models over Celery (the API image has no models): question
 embeddings and reranking. The API waits briefly for the answer; late answers are discarded (the
 tasks expire), so a busy queue degrades search instead of slowing it down. Question embeddings
-are also cached in Redis, per model, since the same questions recur."""
+are also cached in Redis, since the same questions recur; an entry made by another model version
+than the workers now run is ignored."""
 
 import contextlib
 import hashlib
@@ -15,8 +16,8 @@ from redis.asyncio import Redis
 from redis.exceptions import RedisError
 from starlette.concurrency import run_in_threadpool
 
-from medlens.cache.keys import redis_key
-from medlens.ports.embedding import QueryEmbeddingPort
+from medlens.cache.keys import TEXT_MODEL_VERSION_KEY, redis_key
+from medlens.ports.embedding import QueryEmbedding, QueryEmbeddingPort
 
 log = structlog.stdlib.get_logger(__name__)
 
@@ -36,15 +37,23 @@ class CeleryQueryEmbedder:
         self._app = app
         self._timeout = timeout_seconds
 
-    async def embed_query(self, text: str) -> list[float] | None:
+    async def embed_query(self, text: str) -> QueryEmbedding | None:
         try:
-            vector = await _call(self._app, EMBED_QUERY_TASK, [text], self._timeout)
+            result = await _call(self._app, EMBED_QUERY_TASK, [text], self._timeout)
         except Exception as exc:  # noqa: BLE001 - search falls back to keywords
             log.warning("knowledge.query_embedding_unavailable", error=type(exc).__name__)
             return None
-        if not isinstance(vector, list):
-            return None
-        return [float(value) for value in vector]
+        return _parse(result)
+
+
+def _parse(value: Any) -> QueryEmbedding | None:
+    """The worker's (or the cache's) ``{"model_version": ..., "vector": [...]}``."""
+    if not isinstance(value, dict):
+        return None
+    version, vector = value.get("model_version"), value.get("vector")
+    if not isinstance(version, str) or not isinstance(vector, list):
+        return None
+    return QueryEmbedding(version, [float(item) for item in vector])
 
 
 class CeleryReranker:
@@ -64,8 +73,10 @@ class CeleryReranker:
 
 
 class CachedQueryEmbedder:
-    """Question embeddings in Redis for ``ttl_seconds``, keyed by model and the question's
-    hash (questions are not stored in clear). Redis errors only skip the cache."""
+    """Question embeddings in Redis for ``ttl_seconds``, keyed by the configured model and the
+    question's hash (questions are not stored in clear). Each entry records the model version
+    that made it; one made by another version than the workers now run is ignored (read in
+    the same round trip), so a model change invalidates the cache. Redis errors only skip it."""
 
     def __init__(
         self, inner: QueryEmbeddingPort, redis: Redis, *, model: str, ttl_seconds: int
@@ -79,18 +90,24 @@ class CachedQueryEmbedder:
         digest = hashlib.sha256(f"{self._model}\n{text}".encode()).hexdigest()
         return redis_key("query_embedding", digest)
 
-    async def embed_query(self, text: str) -> list[float] | None:
+    async def embed_query(self, text: str) -> QueryEmbedding | None:
         if not self._ttl:
             return await self._inner.embed_query(text)
         key = self._key(text)
         try:
-            cached = await self._redis.get(key)
+            cached, current = await self._redis.mget([key, TEXT_MODEL_VERSION_KEY])
         except RedisError:
-            cached = None
-        if cached is not None:
-            return [float(value) for value in json.loads(cached)]
-        vector = await self._inner.embed_query(text)
-        if vector is not None:
+            cached = current = None
+        hit = _parse(json.loads(cached)) if cached is not None else None
+        if hit is not None and (current is None or _text(current) == hit.model_version):
+            return hit
+        embedding = await self._inner.embed_query(text)
+        if embedding is not None:
+            value = {"model_version": embedding.model_version, "vector": embedding.vector}
             with contextlib.suppress(RedisError):
-                await self._redis.set(key, json.dumps(vector), ex=self._ttl)
-        return vector
+                await self._redis.set(key, json.dumps(value), ex=self._ttl)
+        return embedding
+
+
+def _text(value: bytes | str) -> str:
+    return value.decode() if isinstance(value, bytes) else value

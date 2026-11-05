@@ -40,7 +40,7 @@ def get_case_service(
     resources: Annotated[Resources, Depends(get_resources)],
     storage: Annotated[StoragePort, Depends(get_storage)],
 ) -> CaseService:
-    return CaseService(resources.session_factory, storage)
+    return CaseService(resources.session_factory, storage, resources.redis)
 
 
 ServiceDep = Annotated[CaseService, Depends(get_case_service)]

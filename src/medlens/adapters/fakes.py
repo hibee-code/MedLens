@@ -12,6 +12,7 @@ from medlens.ai.gateway.ledger import CallRecord
 from medlens.ai.gateway.pricing import TokenUsage
 from medlens.ai.gateway.providers import ProviderRequest, ProviderResponse
 from medlens.ports.barcode import BarcodeRead
+from medlens.ports.embedding import QueryEmbedding
 from medlens.ports.image_analysis import ImageAssessment
 from medlens.ports.llm import LLMUnavailableError
 from medlens.ports.ocr import OcrResult
@@ -152,9 +153,11 @@ class FakeQueryEmbedder:
     model: "FakeTextEmbedder | None" = None
     calls: list[str] = field(default_factory=list)
 
-    async def embed_query(self, text: str) -> list[float] | None:
+    async def embed_query(self, text: str) -> QueryEmbedding | None:
         self.calls.append(text)
-        return self.model.embed_query(text) if self.model else None
+        if self.model is None:
+            return None
+        return QueryEmbedding(self.model.model_version, self.model.embed_query(text))
 
 
 @dataclass

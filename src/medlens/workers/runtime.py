@@ -27,6 +27,7 @@ from medlens.adapters.storage import SyncS3Storage
 from medlens.ai.gateway.gateway import LLMGateway
 from medlens.ai.gateway.ledger import SyncLedger
 from medlens.ai.gateway.providers import AnthropicProvider
+from medlens.cache.keys import TEXT_MODEL_VERSION_KEY
 from medlens.cache.redis import create_sync_redis_client
 from medlens.core import telemetry
 from medlens.core.config import Settings
@@ -188,6 +189,14 @@ def _fits(model: int, configured: int, kind: str) -> bool:
     return False
 
 
+def _publish_text_model(redis: Redis, version: str) -> None:
+    """The API's question-embedding cache drops entries made by another model version."""
+    try:
+        redis.set(TEXT_MODEL_VERSION_KEY, version)
+    except Exception as exc:  # noqa: BLE001 - only the cache's freshness check depends on it
+        log.warning("embeddings.version_publish_failed", error=type(exc).__name__)
+
+
 def build_runtime(settings: Settings) -> WorkerRuntime:
     engine = create_sync_engine(
         settings.database, application_name=f"{settings.observability.service_name}-worker"
@@ -199,6 +208,8 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
     analyzer, barcode, ocr = build_readers(settings)
     models = build_models(settings)
     embedder, text_embedder = models.image, models.text
+    if text_embedder is not None:
+        _publish_text_model(redis, text_embedder.model_version)
     gateway = LLMGateway(settings.llm, AnthropicProvider(settings.llm), SyncLedger(sessions, redis))
     reader = GatewayPackReader(gateway)
     config, scorer = pipeline_config(settings), scorer_for(settings)

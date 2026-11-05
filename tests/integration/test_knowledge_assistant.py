@@ -475,6 +475,28 @@ async def test_search_keeps_the_fused_order_without_the_reranker(api: Api) -> No
     assert all(result["rerank_score"] is None for result in body["results"])
 
 
+async def test_vector_search_skips_passages_of_another_model_version(api: Api) -> None:
+    """After a text model change, passages not yet re-embedded are not compared with the new
+    model's question vectors (they are found by keywords and NAFDAC numbers only)."""
+    from medlens.adapters.fakes import FakeQueryEmbedder, FakeTextEmbedder
+    from medlens.modules.knowledge.router import get_query_embedder
+
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    _, number, _ = await indexed_alert(api, headers)  # embedded by fake-text-embedder-1
+    params = {"q": f"counterfeit alert {number}"}
+
+    same = await api.client.get("/api/v1/knowledge/search", params=params, headers=headers)
+    newer = FakeQueryEmbedder(FakeTextEmbedder(model_version="fake-text-embedder-2"))
+    api.app.dependency_overrides[get_query_embedder] = lambda: newer
+    other = await api.client.get("/api/v1/knowledge/search", params=params, headers=headers)
+
+    assert any("vector" in hit["matched_by"] for hit in same.json()["results"])
+    assert other.json()["vector_search"] is True
+    assert other.json()["results"]  # still found, by keywords and the number
+    assert not any("vector" in hit["matched_by"] for hit in other.json()["results"])
+
+
 def sse_events(text: str) -> list[tuple[str, dict[str, Any]]]:
     events = []
     for block in text.strip().split("\n\n"):
@@ -508,3 +530,53 @@ async def test_the_answer_streams_its_progress(api: Api) -> None:
     assert name == "answer"
     assert final["outcome"] == "answered"
     assert final["citations"][0]["chunk_id"] == chunk["chunk_id"]
+
+
+async def test_a_streamed_answer_that_fails_the_citation_check_is_never_sent(api: Api) -> None:
+    """Grounded or silent, also when streaming: nothing of an ungrounded answer reaches the
+    client; the final event says insufficient_evidence."""
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    _, number, _ = await indexed_alert(api, headers)
+    chunk = await chunk_for(api, headers, number)
+    invented = "The batch was made in a counterfeit factory in Onitsha."
+    api.use_llm(
+        answer(str(uuid4()), "Batch No: F2034", text=invented),
+        answer(chunk["chunk_id"], "a sentence that is not in the document", text=invented),
+    )
+
+    response = await api.client.post(
+        "/api/v1/assistant/ask/stream",
+        json={"question": f"Is {number} counterfeit?"},
+        headers=headers,
+    )
+
+    events = sse_events(response.text)
+    stages = [data["stage"] for name, data in events if name == "status"]
+    name, final = events[-1]
+    assert "retrying" in stages
+    assert (name, final["outcome"]) == ("answer", "insufficient_evidence")
+    assert final["reason"] == "citations_not_grounded"
+    assert final["answer"] is None
+    assert invented not in response.text  # never sent, not even before the check
+
+
+async def test_streaming_can_be_switched_off(
+    migrated_settings: Any, database_groups: dict[str, Any], redis_groups: dict[str, Any]
+) -> None:
+    from tests.integration.api_support import open_api
+    from tests.integration.support import make_settings
+
+    settings = make_settings(
+        database=database_groups, redis=redis_groups, knowledge={"assistant_streaming": False}
+    )
+    async with open_api(settings) as api:
+        user, organization = await regulator(api)
+        response = await api.client.post(
+            "/api/v1/assistant/ask/stream",
+            json={"question": "Any alert for Coartem?"},
+            headers=api.bearer(api.token(user, organization=organization)),
+        )
+
+    assert response.status_code == 404
+    assert "POST /api/v1/assistant/ask" in response.json()["detail"]

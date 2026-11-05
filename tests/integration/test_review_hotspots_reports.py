@@ -327,6 +327,33 @@ async def test_hotspots_cluster_flagged_scans_and_are_cached(api: Api) -> None:
     assert other.json()["generated_at"] != gombe.json()["generated_at"]
 
 
+async def test_a_verdict_override_invalidates_cached_hotspots(api: Api) -> None:
+    """Cached hotspots must not keep counting a scan whose final verdict a case changed."""
+    admin, organization = await regulator(api, ["NG-KE"])  # Kebbi: no other test uses it
+    headers = auth(api, admin, organization)
+    scan_id = await unregistered_scan(api, "NG-KE")
+    case = open_case(api, scan_id)
+    assert case is not None
+    url = "/api/v1/hotspots?state=NG-KE&days=1"
+
+    first = (await api.client.get(url, headers=headers)).json()
+    cached = (await api.client.get(url, headers=headers)).json()
+    decided = await api.client.post(
+        f"/api/v1/cases/{case.id}/lab-result",
+        json={
+            "outcome": "genuine",
+            "override_verdict": "LIKELY_GENUINE",
+            "override_note": "Lab confirmed the pack.",
+        },
+        headers=headers,
+    )
+    after = (await api.client.get(url, headers=headers)).json()
+
+    assert cached["generated_at"] == first["generated_at"]
+    assert decided.status_code == 200, decided.text
+    assert after["generated_at"] != first["generated_at"]  # recomputed
+
+
 async def test_regulators_only_see_hotspots_in_their_jurisdiction(api: Api) -> None:
     flagged_scans(api, MAIDUGURI, NigerianState.BORNO)
     user, organization = await regulator(api, ["NG-AD"])

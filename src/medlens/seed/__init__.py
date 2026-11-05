@@ -15,9 +15,8 @@ import csv
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
-from uuid import UUID
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
@@ -36,14 +35,11 @@ from medlens.modules.organizations.models import (
 )
 from medlens.modules.products.models import (
     Batch,
-    ImageSide,
     Product,
     ReferenceImage,
-    ReviewStatus,
 )
 from medlens.modules.rbac.models import RoleName
 from medlens.modules.users.models import User
-from medlens.ports.storage import SyncStoragePort
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[3] / "seed"
 REGULATOR_NAME = "National Agency for Food and Drug Administration and Control (NAFDAC)"
@@ -109,14 +105,12 @@ def run_seed(
     *,
     staff_password: str | None = None,
     reset_staff_logins: bool = False,
-    storage: SyncStoragePort | None = None,
 ) -> SeedSummary:
     """Seed inside the caller's transaction. ``staff_password`` becomes the password of every
     e-mail test user that has none yet (phone users sign in with SMS codes); with
     ``reset_staff_logins`` it replaces their passwords and switches their MFA off (demos on a
-    database seeded earlier). With ``storage``, the synthetic reference images in
-    seed/reference_images are stored and registered as approved (the embedding backfill embeds
-    them)."""
+    database seeded earlier). The seed adds no reference images: synthetic ones are for tests
+    only, and those an earlier seed approved are withdrawn."""
     products = read_products(data_dir / "products.csv")
     manufacturers = {
         name: _organization(session, str(name), OrganizationType.MANUFACTURER)
@@ -169,11 +163,7 @@ def run_seed(
                 .on_conflict_do_nothing(index_elements=["user_id", "organization_id"])
             )
     session.flush()
-    if storage is not None:
-        admin = session.scalar(select(User).where(User.email == "platform.admin@medlens.test"))
-        _seed_reference_images(
-            session, data_dir / "reference_images", storage, admin.id if admin else None
-        )
+    _withdraw_synthetic_references(session)
     return SeedSummary(
         products=_count(session, Product),
         organizations=_count(session, Organization),
@@ -273,35 +263,15 @@ def _seed_documents(session: Session, directory: Path) -> None:
         index_pages(session, document, extract_pages(data, "text/plain"), None, KnowledgeSettings())
 
 
-def _seed_reference_images(
-    session: Session, directory: Path, storage: SyncStoragePort, reviewer: UUID | None
-) -> None:
-    index = directory / "index.csv"
-    if not index.exists():
-        return
-    with index.open(newline="", encoding="utf-8") as handle:
-        rows = list(csv.DictReader(handle))
-    for row in rows:
-        product = session.scalar(
-            select(Product).where(Product.nafdac_number == row["nafdac_number"])
-        )
-        key = f"reference-images/seed/{row['file']}"
-        if product is None or session.scalar(
-            select(ReferenceImage.id).where(ReferenceImage.s3_key == key)
-        ):
-            continue
-        storage.put(key, (directory / row["file"]).read_bytes(), content_type="image/jpeg")
-        session.add(
-            ReferenceImage(
-                product_id=product.id,
-                side=ImageSide(row["side"]),
-                s3_key=key,
-                status=ReviewStatus.APPROVED,  # synthetic seed data, for local demos only
-                reviewed_at=datetime.now(UTC),
-                verified_by=reviewer,
-            )
-        )
-    session.flush()
+SYNTHETIC_REFERENCE_PREFIX = "reference-images/seed/"
+
+
+def _withdraw_synthetic_references(session: Session) -> None:
+    """Seeds of 2026-11-04 stored drawn reference packs as approved; synthetic images must never
+    count as genuine references (CLAUDE.md decision log), so they are removed."""
+    session.execute(
+        delete(ReferenceImage).where(ReferenceImage.s3_key.startswith(SYNTHETIC_REFERENCE_PREFIX))
+    )
 
 
 def _user(session: Session, test_user: TestUser) -> User:

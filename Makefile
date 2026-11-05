@@ -11,7 +11,7 @@ INFRA := postgres pgbouncer redis minio
 
 .PHONY: help dev-secrets env install install-ml dev test test-unit test-integration lint format typecheck check \
 	openapi migrate seed embeddings greenbook-import up infra down logs eval demo test-packs \
-	audit ci dashboard onnx
+	audit ci dashboard onnx test-models retrieval-eval ocr-benchmark
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_.-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -33,7 +33,10 @@ install-ml: ## Also install the model groups: ONNX Runtime (ml) and torch for ex
 	$(UV) sync --group ml --group ml-export
 
 onnx: ## Export the models to ONNX into models/onnx (worker image: done while building)
-	$(UV) run python scripts/export_onnx.py --out models/onnx
+	$(UV) run --group ml --group ml-export python scripts/export_onnx.py --out models/onnx
+
+test-models: ## The ONNX exports against the original models, cosine > 0.99 (needs `make onnx`)
+	MEDLENS_MODEL_TESTS=1 $(UV) run --group ml --group ml-export pytest -m models tests/models
 
 dev: .env ## Run the API with auto-reload on :8000 (needs `make infra`)
 	$(UV) run uvicorn medlens.main:create_app --factory --reload --host 127.0.0.1 --port 8000
@@ -92,6 +95,19 @@ greenbook-import: .env ## Load the full Greenbook snapshot (seed/PROVENANCE.md);
 
 eval: .env ## Score the pipeline on seed/test_packs and the assistant on seed/eval_questions.csv
 	$(UV) run python scripts/eval.py
+
+QUESTIONS ?= seed/eval_questions.csv
+retrieval-eval: .env ## Recall/MRR per reranker and the evidence bar's calibration (QUESTIONS=file.csv)
+	$(UV) run --group ml --group ml-export python scripts/retrieval_eval.py --questions $(QUESTIONS)
+
+PHOTOS ?= seed/test_packs
+ENGINES ?= tesseract
+ocr-benchmark: .env ## OCR engines on labelled photos, in the worker image (PHOTOS=dir with labels.csv)
+	docker compose run --rm --no-deps -T -v "$(CURDIR)/scripts:/app/scripts:ro" \
+	  -v "$(abspath $(PHOTOS)):/photos:ro" worker sh -c 'mkdir -p "$$PROMETHEUS_MULTIPROC_DIR" && \
+	  python scripts/ocr_benchmark.py --photos /photos \
+	  --labels /photos/$(if $(filter seed/test_packs,$(PHOTOS)),expected.csv,labels.csv) \
+	  --engines $(ENGINES)'
 
 demo: .env ## Start the stack, seed it, sign in as each role and run the demo requests
 	bash scripts/demo.sh

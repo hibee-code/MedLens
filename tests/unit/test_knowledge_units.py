@@ -32,6 +32,7 @@ from medlens.modules.knowledge.text import (
 )
 from medlens.modules.rag.service import Citation, ModelAnswer, check_grounding
 from medlens.modules.verification.extraction import find_batch_numbers, find_nafdac_numbers
+from medlens.ports.embedding import QueryEmbedding
 from medlens.workers import metrics as worker_metrics
 from tests.fixtures.documents import simple_pdf
 
@@ -185,10 +186,10 @@ class FakeCelery:
 
 
 async def test_query_embeddings_come_from_a_worker_or_not_at_all() -> None:
-    worker = FakeCelery(FakeResult([1, 0.5]))
+    worker = FakeCelery(FakeResult({"model_version": "e5@onnx", "vector": [1, 0.5]}))
     embedder = CeleryQueryEmbedder(worker, timeout_seconds=2)  # type: ignore[arg-type]
 
-    assert await embedder.embed_query("q") == [1.0, 0.5]
+    assert await embedder.embed_query("q") == QueryEmbedding("e5@onnx", [1.0, 0.5])
     name, options = worker.sent[0]
     assert name == "medlens.knowledge.embed_query"
     assert options["expires"] == 2
@@ -197,6 +198,8 @@ async def test_query_embeddings_come_from_a_worker_or_not_at_all() -> None:
     assert await timeout.embed_query("q") is None
     no_model = CeleryQueryEmbedder(FakeCelery(FakeResult(None)), timeout_seconds=1)  # type: ignore[arg-type]
     assert await no_model.embed_query("q") is None
+    malformed = CeleryQueryEmbedder(FakeCelery(FakeResult([1, 0.5])), timeout_seconds=1)  # type: ignore[arg-type]
+    assert await malformed.embed_query("q") is None  # an older worker's bare vector
 
 
 # ------------------------------------------------------------------------- cache-aside

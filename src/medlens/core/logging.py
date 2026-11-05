@@ -18,6 +18,8 @@ from medlens.core.telemetry import add_trace_context
 _PROPAGATED_LOGGERS = ("uvicorn", "uvicorn.error", "celery")
 # AccessLogMiddleware writes one structured line per request; Uvicorn's access log duplicates it.
 _SILENCED_LOGGERS = ("uvicorn.access",)
+# HTTP clients log every request's full URL at INFO, query string included: warnings only.
+_QUIET_LOGGERS = ("httpx", "httpcore", "urllib3")
 
 
 def add_request_context(_: WrappedLogger, __: str, event_dict: EventDict) -> EventDict:
@@ -76,3 +78,5 @@ def configure_logging(settings: Settings) -> None:
         logger = logging.getLogger(name)
         logger.handlers.clear()
         logger.propagate = False
+    for name in _QUIET_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)

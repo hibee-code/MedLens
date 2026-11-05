@@ -240,9 +240,10 @@ class LocalQueryEmbedder:
     def __init__(self, model: Any) -> None:
         self._model = model
 
-    async def embed_query(self, text: str) -> list[float] | None:
-        vector: list[float] = self._model.embed_query(text)
-        return vector
+    async def embed_query(self, text: str) -> Any:
+        from medlens.ports.embedding import QueryEmbedding
+
+        return QueryEmbedding(self._model.model_version, self._model.embed_query(text))
 
 
 class LocalReranker:
@@ -275,7 +276,9 @@ class EvalActor:
     is_platform_admin: bool = True
 
 
-async def evaluate_assistant(live: bool) -> tuple[dict[str, Any], Decimal]:
+async def evaluate_assistant(
+    live: bool, questions: Path | None = None
+) -> tuple[dict[str, Any], Decimal]:
     from sqlalchemy import select
 
     from medlens.core.config import get_settings
@@ -296,7 +299,8 @@ async def evaluate_assistant(live: bool) -> tuple[dict[str, Any], Decimal]:
         sessions, KnowledgeSettings(), query_embedder=query_embedder, reranker=reranker
     )
     assistant = AssistantService(knowledge, gateway, KnowledgeSettings())
-    rows = list(csv.DictReader((SEED / "eval_questions.csv").open(encoding="utf-8")))
+    source = questions or SEED / "eval_questions.csv"
+    rows = list(csv.DictReader(source.open(encoding="utf-8")))
     titles = {
         row["file"]: row["title"]
         for row in csv.DictReader((SEED / "documents" / "index.csv").open(encoding="utf-8"))
@@ -311,7 +315,7 @@ async def evaluate_assistant(live: bool) -> tuple[dict[str, Any], Decimal]:
             reply = await assistant.ask(EvalActor(), row["question"])  # type: ignore[arg-type]
             if row["answerable"] == "yes":
                 answerable += 1
-                expected = titles[row["expected_document"]]
+                expected = titles.get(row["expected_document"], row["expected_document"])
                 titles_cited = {source.hit.chunk.title for source in reply.citations}
                 answered_right += reply.outcome is Outcome.ANSWERED and expected in titles_cited
                 cited += len(reply.citations)
@@ -339,13 +343,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--min-accuracy", type=float, default=0.9)
     parser.add_argument("--skip-assistant", action="store_true")
+    parser.add_argument("--skip-scans", action="store_true")
+    parser.add_argument(
+        "--questions",
+        type=Path,
+        default=None,
+        help="assistant questions CSV (docs/assistant-eval.md); default seed/eval_questions.csv",
+    )
     args = parser.parse_args()
     live = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    scans, scan_cost = evaluate_scans(live)
+    scans, scan_cost = (
+        ({"skipped": "--skip-scans"}, Decimal(0)) if args.skip_scans else evaluate_scans(live)
+    )
     assistant, assistant_cost = (
         ({"skipped": "--skip-assistant"}, Decimal(0))
         if args.skip_assistant
-        else asyncio.run(evaluate_assistant(live))
+        else asyncio.run(evaluate_assistant(live, args.questions))
     )
     report = {
         "models": "live (ANTHROPIC_API_KEY)" if live else "stand-ins (no API key)",
@@ -355,7 +368,7 @@ def main() -> int:
     }
     json.dump(report, sys.stdout, indent=2)
     sys.stdout.write("\n")
-    return 0 if scans["accuracy"] >= args.min_accuracy else 1
+    return 0 if args.skip_scans or scans["accuracy"] >= args.min_accuracy else 1
 
 
 if __name__ == "__main__":

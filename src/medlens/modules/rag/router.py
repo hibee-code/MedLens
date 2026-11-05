@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from medlens.ai.gateway.gateway import AsyncLLMGateway
 from medlens.core.config import Settings
+from medlens.core.errors import NotFound
 from medlens.core.openapi import problem_responses
 from medlens.core.routing import api_v1_router
 from medlens.modules.knowledge.router import ServiceDep as KnowledgeDep
@@ -90,14 +91,16 @@ def answer_read(question: str, reply: AssistantReply) -> AnswerRead:
         "`status` events as each stage starts (searching, retrieved, generating, "
         "checking_citations, retrying), comment lines every 10 s while the model works, then "
         "one `answer` event with the same body as /ask, or an `error` event. The answer is "
-        "sent only after its citations are checked, never token by token."
+        "sent only after its citations are checked, never token by token: when the check "
+        "fails, the `answer` event says `insufficient_evidence` and no unchecked text was "
+        "ever sent. Answers 404 while MEDLENS_KNOWLEDGE__ASSISTANT_STREAMING is off."
     ),
     responses={
         200: {
             "content": {"text/event-stream": {"schema": {"type": "string"}}},
             "description": "Server-sent events.",
         },
-        **problem_responses(401, 403, 422, 429),
+        **problem_responses(401, 403, 404, 422, 429),
     },
     dependencies=[Depends(limit_assistant)],
 )
@@ -108,6 +111,8 @@ async def ask_stream(
     gateway: Annotated[AsyncLLMGateway, Depends(get_llm_gateway)],
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> StreamingResponse:
+    if not settings.knowledge.assistant_streaming:
+        raise NotFound("Streaming is switched off: use POST /api/v1/assistant/ask.")
     service = AssistantService(knowledge, gateway, settings.knowledge)
     events = stream(
         lambda progress: service.ask(actor, body.question, progress),

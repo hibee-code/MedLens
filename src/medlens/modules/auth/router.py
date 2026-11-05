@@ -138,7 +138,7 @@ async def login(
     response_model=TokenResponse,
     summary="Complete sign-in with an authenticator code",
     description="Second step of a login that returned `mfa_required`. A code works only once.",
-    responses=problem_responses(401, 403, 422, 429),
+    responses=problem_responses(401, 403, 422, 429, 503),
     dependencies=[Depends(limit_logins)],
 )
 async def verify_mfa(

@@ -58,13 +58,18 @@ class KnowledgeRepository:
         self._session = session
 
     async def by_vector(
-        self, embedding: list[float], scope: ColumnElement[bool], limit: int
+        self, embedding: list[float], model_version: str, scope: ColumnElement[bool], limit: int
     ) -> list[ChunkHit]:
+        """Nearest passages embedded by ``model_version`` (others are not comparable)."""
         distance = KnowledgeChunk.embedding.cosine_distance(embedding)
         rows = await self._session.execute(
             _chunks()
             .add_columns(1 - distance)
-            .where(scope, KnowledgeChunk.embedding.is_not(None))
+            .where(
+                scope,
+                KnowledgeChunk.embedding.is_not(None),
+                KnowledgeChunk.embedding_model_version == model_version,
+            )
             .order_by(distance)
             .limit(limit)
         )

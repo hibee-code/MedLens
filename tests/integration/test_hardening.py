@@ -12,6 +12,7 @@ from redis.asyncio import Redis
 from medlens.ai.gateway.ledger import AsyncLedger, CallRecord
 from medlens.ai.gateway.pricing import TokenUsage
 from medlens.core.config import Settings
+from medlens.core.errors import DependencyUnavailable
 from medlens.modules.control_plane.models import LLMCallOutcome
 from medlens.modules.rbac.models import RoleName
 from medlens.ratelimit.limiter import SlidingWindowLimiter
@@ -101,12 +102,30 @@ async def test_assistant_questions_are_limited(limited: Api) -> None:
     assert second.status_code == 429
 
 
-async def test_limits_are_skipped_while_redis_is_down() -> None:
+async def test_scan_limits_fail_open_and_sign_in_limits_closed_while_redis_is_down() -> None:
     down = Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2)
     limiter = SlidingWindowLimiter(down)
 
     assert await limiter.retry_after("scans_guest", "x", limit=1) is None
+    with pytest.raises(DependencyUnavailable) as refused:
+        await limiter.retry_after("login", "x", limit=1, fail_open=False)
+    assert refused.value.headers == {"Retry-After": "5"}
     await down.aclose()
+
+
+async def test_sign_in_answers_503_while_redis_is_down(
+    migrated_settings: Settings, database_groups: dict[str, Any]
+) -> None:
+    unreachable = {"host": "127.0.0.1", "port": 1, "socket_connect_timeout_seconds": 0.2}
+    settings = make_settings(database=database_groups, redis=unreachable, ratelimit=LIMITS)
+    async with open_api(settings, flush_redis=False) as api:
+        response = await api.client.post(
+            "/api/v1/auth/login", json={"email": "x@medlens.test", "password": "y" * 12}
+        )
+
+    assert response.status_code == 503
+    assert response.headers["content-type"] == "application/problem+json"
+    assert response.headers["retry-after"] == "5"
 
 
 # ------------------------------------------------------------------------- headers and metrics

@@ -220,11 +220,14 @@ def ingest_document(document_id: str) -> str | None:
 
 
 @task(name="medlens.knowledge.embed_query", ignore_result=False, **_RETRY)
-def embed_query(text: str) -> list[float] | None:
-    """For the API's search: the question's embedding, returned through the result backend.
-    The API stops waiting after MEDLENS_KNOWLEDGE__QUERY_EMBEDDING_TIMEOUT_SECONDS."""
+def embed_query(text: str) -> dict[str, Any] | None:
+    """For the API's search: the question's embedding and the model version that made it,
+    returned through the result backend. The API stops waiting after
+    MEDLENS_KNOWLEDGE__QUERY_EMBEDDING_TIMEOUT_SECONDS."""
     embedder = get_runtime().text_embedder
-    return embedder.embed_query(text) if embedder is not None else None
+    if embedder is None:
+        return None
+    return {"model_version": embedder.model_version, "vector": embedder.embed_query(text)}
 
 
 @task(name="medlens.knowledge.rerank", ignore_result=False, **_RETRY)

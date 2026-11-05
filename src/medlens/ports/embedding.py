@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 
@@ -29,8 +30,17 @@ class TextEmbeddingPort(Protocol):
     def probe_dimension(self) -> int: ...
 
 
+@dataclass(frozen=True, slots=True)
+class QueryEmbedding:
+    """A question's vector and the model version that made it: search compares it only with
+    passages embedded by the same version (vectors of two models are never mixed)."""
+
+    model_version: str
+    vector: list[float]
+
+
 class QueryEmbeddingPort(Protocol):
     """Question embeddings for the API, which has no model of its own: computed elsewhere (the
     worker) within a time limit. None means unavailable; search then runs without vectors."""
 
-    async def embed_query(self, text: str) -> list[float] | None: ...
+    async def embed_query(self, text: str) -> QueryEmbedding | None: ...

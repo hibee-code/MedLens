@@ -465,11 +465,24 @@ def _import(source: str | None) -> int:
             new, updated = import_snapshot(session, data, manifest)
     finally:
         engine.dispose()
+    clear_cached_products(settings)
     sys.stdout.write(
         f"imported {manifest.file} (fetched {manifest.fetched_on}): {new} new products, "
         f"{updated} updated\n"
     )
     return 0
+
+
+def clear_cached_products(settings: Any) -> None:
+    """After product facts changed: scans must not keep using the old ones until they expire."""
+    from medlens.cache.redis import create_sync_redis_client
+    from medlens.modules.products.cache import clear_product_facts
+
+    redis = create_sync_redis_client(settings.redis, db=settings.redis.cache_db)
+    try:
+        clear_product_facts(redis)
+    finally:
+        redis.close()
 
 
 def _read_source(location: str) -> bytes:

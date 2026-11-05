@@ -590,6 +590,24 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
           }
         }
       }
@@ -8818,7 +8836,7 @@
           "assistant"
         ],
         "summary": "Ask the assistant, streaming progress",
-        "description": "The same answer as POST /assistant/ask, as server-sent events (text/event-stream): `status` events as each stage starts (searching, retrieved, generating, checking_citations, retrying), comment lines every 10 s while the model works, then one `answer` event with the same body as /ask, or an `error` event. The answer is sent only after its citations are checked, never token by token.",
+        "description": "The same answer as POST /assistant/ask, as server-sent events (text/event-stream): `status` events as each stage starts (searching, retrieved, generating, checking_citations, retrying), comment lines every 10 s while the model works, then one `answer` event with the same body as /ask, or an `error` event. The answer is sent only after its citations are checked, never token by token: when the check fails, the `answer` event says `insufficient_evidence` and no unchecked text was ever sent. Answers 404 while MEDLENS_KNOWLEDGE__ASSISTANT_STREAMING is off.",
         "operationId": "assistant-ask_stream",
         "requestBody": {
           "content": {
@@ -8871,6 +8889,24 @@
                   "title": "Forbidden",
                   "status": 403,
                   "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
                   "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
                   "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
                 }

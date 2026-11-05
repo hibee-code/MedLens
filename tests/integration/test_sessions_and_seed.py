@@ -172,30 +172,35 @@ def test_sync_session_scope_commits_and_rolls_back(
     assert failed not in names
 
 
-def test_the_seed_stores_approved_synthetic_reference_images(migrated_settings: Settings) -> None:
-    from medlens.adapters.fakes import InMemoryStorage, SyncView
-    from medlens.modules.products.models import ReferenceImage, ReviewStatus
+def test_the_seed_withdraws_synthetic_reference_images(migrated_settings: Settings) -> None:
+    """Synthetic images are for tests only and never approved as genuine references; an
+    earlier seed stored some, and seeding again removes them."""
+    from medlens.modules.products.models import ImageSide, Product, ReferenceImage, ReviewStatus
+    from medlens.seed import SYNTHETIC_REFERENCE_PREFIX
 
-    storage = InMemoryStorage()
     engine = create_sync_engine(migrated_settings.database, application_name="medlens-tests")
     factory = create_sync_session_factory(engine)
     try:
         with factory() as session, session.begin():
-            run_seed(session, ROOT / "seed", storage=SyncView(storage))
-            run_seed(session, ROOT / "seed", storage=SyncView(storage))  # idempotent
-            images = [
-                (image.status, image.embedding)
-                for image in session.scalars(
-                    select(ReferenceImage).where(
-                        ReferenceImage.s3_key.like("reference-images/seed/%")
-                    )
+            run_seed(session, ROOT / "seed")
+            product = session.scalars(select(Product).limit(1)).one()
+            session.add(
+                ReferenceImage(
+                    product_id=product.id,
+                    side=ImageSide.FRONT,
+                    s3_key=f"{SYNTHETIC_REFERENCE_PREFIX}synthetic-{uuid4().hex}.jpg",
+                    status=ReviewStatus.APPROVED,
                 )
-            ]
+            )
+            session.flush()
+            run_seed(session, ROOT / "seed")
+            left = session.scalar(
+                select(func.count())
+                .select_from(ReferenceImage)
+                .where(ReferenceImage.s3_key.startswith(SYNTHETIC_REFERENCE_PREFIX))
+            )
             session.rollback()  # leave the shared database as it was
     finally:
         engine.dispose()
 
-    assert len(images) == 5
-    assert all(status is ReviewStatus.APPROVED for status, _ in images)
-    assert all(embedding is None for _, embedding in images)  # the backfill embeds them
-    assert len(storage.objects) == 5
+    assert left == 0

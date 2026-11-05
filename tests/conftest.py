@@ -10,6 +10,18 @@ from medlens.core.config import Settings
 from medlens.main import create_app
 from tests.support import build_settings
 
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Tests marked ``live`` call paid external services (the model API): skipped unless
+    MEDLENS_LIVE_TESTS=1 and an API key are set by hand. CI never sets them."""
+    if os.environ.get("MEDLENS_LIVE_TESTS") == "1" and os.environ.get("ANTHROPIC_API_KEY"):
+        return
+    skip = pytest.mark.skip(reason="live: set MEDLENS_LIVE_TESTS=1 and ANTHROPIC_API_KEY")
+    for item in items:
+        if "live" in item.keywords:
+            item.add_marker(skip)
+
+
 SettingsFactory = Callable[..., Settings]
 
 

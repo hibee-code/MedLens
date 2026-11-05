@@ -230,7 +230,7 @@ class KnowledgeService:
             }
             if embedding is not None:
                 rankings["vector"] = await repository.by_vector(
-                    embedding, scope, settings.candidates
+                    embedding.vector, embedding.model_version, scope, settings.candidates
                 )
             similarity = {hit.chunk_id: hit.score for hit in rankings.get("vector", [])}
             evidence = {

@@ -9,7 +9,7 @@ packs: they exercise the readers and the scorer, not real-world accuracy.
 Writes:
   tests/fixtures/packs/    the five M3 fixtures and packs.csv
   seed/test_packs/         the eval set and expected.csv
-  seed/reference_images/   one synthetic front per seeded product, loaded by the seed
+  tests/fixtures/reference_images/   synthetic fronts of five seeded products (tests only)
 
 Deterministic: running it again produces the same files.
 """
@@ -28,7 +28,7 @@ from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures" / "packs"
 EVAL = ROOT / "seed" / "test_packs"
-REFERENCES = ROOT / "seed" / "reference_images"
+REFERENCES = ROOT / "tests" / "fixtures" / "reference_images"
 SIZE = (1200, 1600)
 
 
@@ -171,7 +171,9 @@ def write(packs: tuple[Pack, ...], directory: Path, index: str) -> None:
         writer.writerows(rows)
 
 
-# One clean front per seeded product: what an approved manufacturer reference would show.
+# One clean front per seeded product, drawn like a manufacturer's reference photo. Synthetic:
+# for tests only (the ONNX equivalence test, visual-matching tests). They are never seeded, never
+# approved as genuine references and never part of an accuracy report (CLAUDE.md decision log).
 REFERENCE_PRODUCTS = (
     ("04-0289", EMZOR, (214, 196, 160)),
     ("A4-2374", ADALAT, (214, 196, 160)),
@@ -182,15 +184,16 @@ REFERENCE_PRODUCTS = (
 
 
 def write_references(directory: Path) -> None:
-    """Synthetic reference images (seed/reference_images), loaded by the seed as approved."""
+    """Synthetic reference images (tests/fixtures/reference_images), marked synthetic in their
+    file names, their index and the drawing itself."""
     directory.mkdir(parents=True, exist_ok=True)
     rows = []
     for number, brand, card in REFERENCE_PRODUCTS:
-        name = f"{number}-front.jpg"
+        name = f"synthetic-{number}-front.jpg"
         reference = Pack(name, brand, number, "(printed per batch)", "(per batch)", "", "",
                          gtin=None, card=card)  # fmt: skip
         (directory / name).write_bytes(draw(reference))
-        rows.append({"file": name, "nafdac_number": number, "side": "front"})
+        rows.append({"file": name, "nafdac_number": number, "side": "front", "synthetic": "yes"})
     with (directory / "index.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
         writer.writeheader()
