@@ -44,6 +44,12 @@ def app(settings: Settings) -> FastAPI:
     async def raise_domain_error(slug: str) -> None:
         raise DOMAIN_ERRORS[slug]
 
+    @router.get("/pool-exhausted")
+    async def pool_exhausted() -> None:
+        from sqlalchemy.exc import TimeoutError as PoolTimeoutError
+
+        raise PoolTimeoutError("QueuePool limit of size 10 overflow 5 reached")
+
     @router.get("/boom")
     async def boom() -> None:
         raise RuntimeError("password=hunter2 leaked into an exception message")
@@ -159,3 +165,18 @@ async def test_streamed_body_over_limit_is_rejected(client: httpx.AsyncClient) -
 
     assert response.status_code == 413
     assert response.json()["detail"] == "The request body exceeds the limit of 1024 bytes."
+
+
+async def test_an_exhausted_database_pool_sheds_load_with_503(client: httpx.AsyncClient) -> None:
+    """Overload, not a bug: 503 with Retry-After so clients back off, never a 500."""
+    from medlens.core.errors import DB_POOL_EXHAUSTED
+
+    before = DB_POOL_EXHAUSTED._value.get()
+    response = await client.get("/api/v1/_test/pool-exhausted")
+
+    assert response.status_code == 503
+    assert response.headers["retry-after"] == "2"
+    body = response.json()
+    assert body["type"] == "urn:medlens:problem:dependency-unavailable"
+    assert "QueuePool" not in response.text  # nothing internal leaks
+    assert DB_POOL_EXHAUSTED._value.get() == before + 1

@@ -109,7 +109,7 @@ def search_results(query: str, result: SearchResult) -> SearchResults:
         "forms are refused). A worker extracts the text, skips it if the same text is already "
         "indexed, removes personal data, chunks it, embeds the chunks and, for alerts and "
         "recalls, records the NAFDAC numbers and batches they name. Only `official`, `active` "
-        "alerts and recalls flag scans (docs/scoring.md). Poll GET /knowledge/documents/{id} "
+        "alerts and recalls flag scans. Poll GET /knowledge/documents/{id} "
         "for the status."
     ),
     responses=problem_responses(401, 403, 413, 415, 422),

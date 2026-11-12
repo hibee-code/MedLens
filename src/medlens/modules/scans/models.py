@@ -8,6 +8,7 @@ from sqlalchemy import (
     ARRAY,
     BigInteger,
     CheckConstraint,
+    ColumnElement,
     ForeignKey,
     Index,
     String,
@@ -20,6 +21,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from medlens.core.identifiers import NigerianState
 from medlens.db.base import Entity
+from medlens.db.partitions import id_window as partition_id_window
 from medlens.db.types import str_enum
 
 
@@ -47,6 +49,12 @@ def _utcnow() -> datetime:
 class Scan(Entity):
     """One verification request. RANGE-partitioned by month on created_at, which is therefore
     part of the primary key (CLAUDE.md §7). Partitions: db/partitions.py."""
+
+    @classmethod
+    def id_window(cls, scan_id: UUID) -> ColumnElement[bool]:
+        """Filter for one scan by id that prunes to its monthly partition. Use it for every
+        lookup by id (this module, cases, verification, workers)."""
+        return partition_id_window(cls.id, cls.created_at, scan_id)
 
     __tablename__ = "scans"
     __table_args__ = (

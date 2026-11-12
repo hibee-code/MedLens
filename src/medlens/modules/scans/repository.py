@@ -1,32 +1,19 @@
 """Scans are partitioned by month on ``created_at``. Lookups by id add a window around the time
 encoded in the UUIDv7 id, so Postgres prunes to one partition and uses the primary key."""
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import ColumnElement, Select, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from medlens.core.ids import uuid7_time
 from medlens.core.pagination import PageParams
 from medlens.modules.products.models import Product
 from medlens.modules.scans.models import Scan
 
-# created_at and the id are taken from the same clock when a scan is made; the margin only
-# absorbs clock adjustments between the two calls.
-ID_TIME_MARGIN = timedelta(minutes=5)
-
 
 def id_window(scan_id: UUID) -> ColumnElement[bool]:
-    try:
-        made = uuid7_time(scan_id)
-    except ValueError:
-        return Scan.id == scan_id  # not ours: a full search finds nothing anyway
-    return (
-        (Scan.id == scan_id)
-        & (Scan.created_at >= made - ID_TIME_MARGIN)
-        & (Scan.created_at <= made + ID_TIME_MARGIN)
-    )
+    return Scan.id_window(scan_id)
 
 
 def _with_product() -> Select[Scan, Product]:

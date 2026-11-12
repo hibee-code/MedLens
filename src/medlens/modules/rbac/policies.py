@@ -1,4 +1,4 @@
-"""Resource-level authorization rules (docs/rbac.md, "Policies").
+"""Resource-level authorization rules.
 
 Called from services, never from routers, so the API and the workers apply the same rules.
 Query helpers return SQL conditions to add to a repository query; ``can_*`` helpers decide on a

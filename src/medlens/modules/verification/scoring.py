@@ -1,5 +1,5 @@
 """Risk scoring: signals in, verdict out. Deterministic and explainable (CLAUDE.md §5); the
-formula is documented in docs/scoring.md.
+formula is documented here and in the decision log (CLAUDE.md §9).
 
 ``RiskScorer`` is the interface. ``WeightedRuleScorer`` (v2) is rule-based until labelled lab
 results exist; a calibrated LightGBM scorer will implement the same interface and its own
@@ -109,7 +109,7 @@ _REGISTRATION_REASONS = {
 
 
 class WeightedRuleScorer:
-    version = "weighted-rules-v2"  # v2: official alerts and recalls (docs/scoring.md)
+    version = "weighted-rules-v2"  # v2: official alerts and recalls
 
     def __init__(
         self,

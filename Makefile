@@ -11,7 +11,7 @@ INFRA := postgres pgbouncer redis minio
 
 .PHONY: help dev-secrets env install install-ml dev test test-unit test-integration lint format typecheck check \
 	openapi migrate seed embeddings greenbook-import up infra down logs eval demo test-packs \
-	audit ci dashboard onnx test-models retrieval-eval ocr-benchmark
+	audit ci dashboard onnx test-models retrieval-eval ocr-benchmark load-test
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_.-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -99,6 +99,12 @@ eval: .env ## Score the pipeline on seed/test_packs and the assistant on seed/ev
 QUESTIONS ?= seed/eval_questions.csv
 retrieval-eval: .env ## Recall/MRR per reranker and the evidence bar's calibration (QUESTIONS=file.csv)
 	$(UV) run --group ml --group ml-export python scripts/retrieval_eval.py --questions $(QUESTIONS)
+
+SCENARIO ?= mixed
+RATE ?= 50
+DURATION ?= 60
+load-test: ## Open-loop load test of a running stack (SCENARIO=reads|scans|mixed RATE=req/s DURATION=s)
+	$(UV) run python scripts/load_test.py --scenario $(SCENARIO) --rate $(RATE) --duration $(DURATION)
 
 PHOTOS ?= seed/test_packs
 ENGINES ?= tesseract

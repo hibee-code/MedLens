@@ -45,7 +45,6 @@ from medlens.modules.rbac.access import Actor
 from medlens.modules.rbac.models import RolePermission
 from medlens.modules.rbac.permissions import Permission
 from medlens.modules.scans.models import Scan, Verdict
-from medlens.modules.scans.repository import id_window
 from medlens.modules.scans.service import Override, override_verdict, revert_override
 from medlens.modules.verification.service import needs_case
 from medlens.ports.storage import ObjectNotFoundError, StoragePort
@@ -90,7 +89,7 @@ def route_regulator(session: Session, state: NigerianState | None) -> UUID | Non
 
 def open_case_for_scan(session: Session, scan_id: UUID) -> Case | None:
     """Open the scan's case if it needs one; the existing case if it was opened already."""
-    scan = session.scalar(select(Scan).where(id_window(scan_id)))
+    scan = session.scalar(select(Scan).where(Scan.id_window(scan_id)))
     if scan is None or not needs_case(scan):
         return None
     session.execute(

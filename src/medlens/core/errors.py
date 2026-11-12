@@ -13,7 +13,9 @@ import structlog
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
+from prometheus_client import Counter
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from medlens.core.context import get_request_id
@@ -244,7 +246,29 @@ async def _handle_request_validation(request: Request, exc: Exception) -> Respon
     )
 
 
+# A request that waited MEDLENS_DATABASE__POOL_TIMEOUT_SECONDS for a free connection: the
+# container is overloaded. 503 with Retry-After sheds load (clients and the load balancer back
+# off) instead of a 500 that looks like a bug.
+DB_POOL_EXHAUSTED = Counter(
+    "medlens_db_pool_exhausted",
+    "Requests refused with 503 because no database connection was free in time.",
+)
+POOL_RETRY_AFTER_SECONDS = 2
+
+
+async def _handle_pool_timeout(request: Request, _exc: Exception) -> Response:
+    DB_POOL_EXHAUSTED.inc()
+    log.warning("http.db_pool_exhausted", path=request.url.path)
+    error = DependencyUnavailable(
+        "The service is busy. Try again shortly.",
+        dependency="database",
+        retry_after_seconds=POOL_RETRY_AFTER_SECONDS,
+    )
+    return domain_error_response(error, instance=request.url.path)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     app.add_exception_handler(DomainError, _handle_domain_error)
+    app.add_exception_handler(PoolTimeoutError, _handle_pool_timeout)
     app.add_exception_handler(StarletteHTTPException, _handle_http_exception)
     app.add_exception_handler(RequestValidationError, _handle_request_validation)

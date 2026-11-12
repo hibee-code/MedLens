@@ -2,7 +2,7 @@
 
 At runtime permissions are read from the ``roles`` / ``role_permissions`` tables, so the
 matrix can change without a deploy. ``ROLE_PERMISSIONS`` is the seed (migration 0008) and the
-documented baseline: docs/rbac.md must match it, which a test enforces.
+documented baseline; tests/unit/test_rbac_matrix.py checks its consistency.
 
 Resource-level limits (own products, jurisdiction, own scans) are not permissions; they live in
 ``policies.py``.

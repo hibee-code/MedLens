@@ -70,7 +70,7 @@ make audit           # pip-audit on the locked dependencies, bandit on src
 make ci              # check + audit (CI also runs the eval, the model test and both images)
 make onnx test-models          # export the models locally, compare them with the originals
 make retrieval-eval            # recall/MRR per reranker, evidence-bar calibration
-make ocr-benchmark PHOTOS=dir  # OCR engines on labelled photos (docs/ocr-benchmark.md)
+make ocr-benchmark PHOTOS=dir  # OCR engines on labelled photos (see scripts/ocr_benchmark.py)
 ```
 
 Models: the worker image exports CLIP ViT-B/32 (image, 512-d), multilingual-e5-small (text,
@@ -117,7 +117,7 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
 ## The AI design and its limits
 
 * **The verdict is not decided by AI.** It comes from a deterministic, documented scorer
-  ([docs/scoring.md](docs/scoring.md)). The scorer is **rule-based** with expert weights; it
+  ([verification/scoring.py](src/medlens/modules/verification/scoring.py)). The scorer is **rule-based** with expert weights; it
   has not been fitted or validated against laboratory results, because none exist yet. Lab
   results recorded on cases are stored as labels to train and calibrate a model later.
 * **The vision LLM only reads.** It is called only for fields the barcode and OCR could not
@@ -181,6 +181,31 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
   models, and both image builds. CI holds no API keys: tests marked `live` are skipped and the
   evals use stand-ins. Model downloads are cached.
 
+## Capacity
+
+`make load-test SCENARIO=reads|scans|mixed RATE=<per second> DURATION=<seconds>` drives a
+running stack with open-loop traffic (Poisson arrivals from several client processes) and
+reports throughput, status codes, latency percentiles, scan time-to-verdict and the queue's
+peak. Run it with rate limits off and never against a database holding real data (its scans
+are real scans).
+
+Measured on one 8-core laptop (2026-11-12; the client shares the machine, so these are floors):
+
+| Unit | Capacity | Limit |
+|---|---|---|
+| API container (1 Uvicorn process) | about 100-120 simple requests/s, p50 15 ms below that | one CPU core |
+| Worker container (2 processes) | about 1.5 scans/s; 84% answered within the 8 s fast path at 1 scan/s | OCR CPU time |
+
+Beyond capacity nothing is lost: scans queue and finish later, and API requests that cannot get
+a database connection within 10 s get 503 with Retry-After (alert `MedLensDatabasePoolExhausted`).
+
+Sizing for 300,000 registered users, under stated assumptions (10% active a day, 2 scans and
+3 lookups each, 15% of a day's traffic in the peak hour, bursts 3x the peak-hour average):
+about 7.5 scans/s and 30 API requests/s at burst. That needs 3 API containers (2 for the load,
+1 spare) and 6-7 worker containers (2 vCPU and 4 GB each), autoscaled on the scan queue. Check
+the assumptions against real usage, and repeat the test in a production-sized staging
+environment before launch: real photos may take longer to read than the synthetic packs.
+
 ## Evaluation
 
 `make eval` runs `scripts/eval.py`: the pipeline on the 17 packs in `seed/test_packs` (expected
@@ -195,12 +220,12 @@ as in production; the report says which.
 `make retrieval-eval` (`scripts/retrieval_eval.py`) measures search per reranker (recall@1,
 @3, @6 and MRR, against the fused order without one) and calibrates the assistant's evidence
 bar. On the seed's ten synthetic questions every ranking scores 100: real pharmacist questions
-are needed to tell rankers apart and to check the bar ([docs/assistant-eval.md](docs/assistant-eval.md);
+are needed to tell rankers apart and to check the bar (CSV format in the script's docstring;
 `scripts/eval.py --questions FILE` runs the answers too).
 
 `make ocr-benchmark PHOTOS=dir` (`scripts/ocr_benchmark.py`) compares the readers (Tesseract,
 PaddleOCR, the vision LLM) on labelled photos through the pipeline's own parsers, after checking
-the labels ([docs/ocr-benchmark.md](docs/ocr-benchmark.md)). On the synthetic packs it is a
+the labels (format and photo guidance in the script's docstring). On the synthetic packs it is a
 smoke test; the OCR decision needs 100+ real photos.
 
 ## Roadmap to the production plan

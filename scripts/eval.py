@@ -348,7 +348,7 @@ def main() -> int:
         "--questions",
         type=Path,
         default=None,
-        help="assistant questions CSV (docs/assistant-eval.md); default seed/eval_questions.csv",
+        help="CSV: question, expected_document, answerable (default seed/eval_questions.csv)",
     )
     args = parser.parse_args()
     live = bool(os.environ.get("ANTHROPIC_API_KEY"))

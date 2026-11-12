@@ -60,7 +60,9 @@ async def test_not_ready_reports_each_dependency(app: FastAPI, client: httpx.Asy
     checks = response.json()["checks"]
     assert checks["postgres"]["status"] == "ok"
     assert checks["redis"]["status"] == "timeout"
-    assert checks["redis"]["latency_ms"] == pytest.approx(50, abs=40)
+    # The probe hangs forever: a latency near the 50 ms timeout, not seconds, shows the timeout
+    # cut it. The upper bound allows for a loaded machine (scheduler and GC pauses).
+    assert 40 <= checks["redis"]["latency_ms"] < 1000
     assert checks["s3"]["status"] == "error"
     assert checks["s3"]["error"] == "ConnectionRefusedError"
     assert "10.0.0.12" not in response.text

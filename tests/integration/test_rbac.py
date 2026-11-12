@@ -11,7 +11,6 @@ from medlens.modules.rbac.access import PermissionVersions
 from medlens.modules.rbac.models import RoleName, RolePermission
 from medlens.modules.rbac.permissions import ROLE_PERMISSIONS, Permission
 from tests.integration.api_support import Api
-from tests.unit.test_rbac_matrix import documented_matrix
 
 pytestmark = pytest.mark.integration
 
@@ -47,7 +46,6 @@ async def test_database_matrix_matches_code_and_docs(api: Api) -> None:
 
     expected = {role.value: {p.value for p in perms} for role, perms in ROLE_PERMISSIONS.items()}
     assert stored == expected  # every role has at least one permission
-    assert documented_matrix() == expected
 
 
 # ------------------------------------------------------------------ representative endpoints

@@ -8047,7 +8047,7 @@
           "knowledge"
         ],
         "summary": "Add a document to the knowledge base",
-        "description": "Uploads a PDF, plain-text or Markdown document (up to MEDLENS_KNOWLEDGE__MAX_DOCUMENT_BYTES; the real type is checked by content, and PDFs with scripts, attachments or forms are refused). A worker extracts the text, skips it if the same text is already indexed, removes personal data, chunks it, embeds the chunks and, for alerts and recalls, records the NAFDAC numbers and batches they name. Only `official`, `active` alerts and recalls flag scans (docs/scoring.md). Poll GET /knowledge/documents/{id} for the status.",
+        "description": "Uploads a PDF, plain-text or Markdown document (up to MEDLENS_KNOWLEDGE__MAX_DOCUMENT_BYTES; the real type is checked by content, and PDFs with scripts, attachments or forms are refused). A worker extracts the text, skips it if the same text is already indexed, removes personal data, chunks it, embeds the chunks and, for alerts and recalls, records the NAFDAC numbers and batches they name. Only `official`, `active` alerts and recalls flag scans. Poll GET /knowledge/documents/{id} for the status.",
         "operationId": "knowledge-upload_document",
         "security": [
           {

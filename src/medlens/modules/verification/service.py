@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session, sessionmaker
 from medlens.core.config import Settings
 from medlens.core.ids import uuid7_time
 from medlens.modules.scans.models import Scan, ScanStatus, Verdict
-from medlens.modules.scans.repository import id_window
 from medlens.modules.verification.catalog import Catalog
 from medlens.modules.verification.codes import ReasonCode
 from medlens.modules.verification.metrics import SCANS, record_scan
@@ -179,7 +178,9 @@ class VerificationService:
     @staticmethod
     def _locked(session: Session, scan_id: UUID, *, skip_locked: bool = False) -> Scan | None:
         uuid7_time(scan_id)  # raises for ids that cannot be ours
-        statement = select(Scan).where(id_window(scan_id)).with_for_update(skip_locked=skip_locked)
+        statement = (
+            select(Scan).where(Scan.id_window(scan_id)).with_for_update(skip_locked=skip_locked)
+        )
         return session.scalar(statement)
 
     @staticmethod

@@ -1,7 +1,4 @@
-"""docs/rbac.md, the code matrix and the role definitions agree."""
-
-import re
-from pathlib import Path
+"""The code matrix (rbac/permissions.py) and the role definitions agree."""
 
 from medlens.modules.organizations.models import OrganizationType
 from medlens.modules.rbac.models import ROLE_DEFINITIONS, RoleName, RoleScope
@@ -16,35 +13,10 @@ from medlens.modules.rbac.permissions import (
     Permission,
 )
 
-DOCS = Path(__file__).resolve().parents[2] / "docs" / "rbac.md"
 
-
-def documented_matrix() -> dict[str, set[str]]:
-    """Parse the role -> permission table of docs/rbac.md."""
-    lines = DOCS.read_text().splitlines()
-    start = next(i for i, line in enumerate(lines) if line.startswith("| Permission | `"))
-    header, table = lines[start], []
-    for line in lines[start + 2 :]:
-        if not line.startswith("| "):
-            break
-        table.append(line)
-    roles = re.findall(r"`([a-z_]+)`", header)
-    matrix: dict[str, set[str]] = {role: set() for role in roles}
-    for line in table:
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        permission = cells[0].strip("`")
-        if ":" not in permission:
-            continue
-        for role, cell in zip(roles, cells[1:], strict=True):
-            if cell == "✓":
-                matrix[role].add(permission)
-    return matrix
-
-
-def test_docs_match_the_code_matrix() -> None:
-    expected = {role.value: {p.value for p in perms} for role, perms in ROLE_PERMISSIONS.items()}
-
-    assert documented_matrix() == expected
+def test_member_management_is_never_delegated_to_api_keys() -> None:
+    assert Permission.MEMBER_MANAGE in NON_DELEGABLE_TO_API_KEYS
+    assert Permission.PRODUCT_WRITE not in NON_DELEGABLE_TO_API_KEYS
 
 
 def test_every_role_and_permission_is_defined() -> None:
@@ -85,26 +57,6 @@ def test_signals_stay_with_regulators_and_platform_admins() -> None:
 def test_api_keys_cannot_administer() -> None:
     assert Permission.MEMBER_MANAGE in NON_DELEGABLE_TO_API_KEYS
     assert Permission.PRODUCT_WRITE not in NON_DELEGABLE_TO_API_KEYS
-
-
-def documented_organization_types() -> dict[str, set[str]]:
-    """Parse the role -> organization types table of docs/rbac.md."""
-    found: dict[str, set[str]] = {}
-    for line in DOCS.read_text().splitlines():
-        cells = [cell.strip() for cell in line.strip("|").split("|")]
-        if len(cells) == 2 and cells[0].startswith("`") and "_" in cells[0]:
-            for role in re.findall(r"`([a-z_]+)`", cells[0]):
-                found[role] = {kind.strip() for kind in cells[1].split(",")}
-    return found
-
-
-def test_docs_match_the_role_organization_types() -> None:
-    expected = {
-        role.value: {kind.value for kind in kinds}
-        for role, kinds in ROLE_ORGANIZATION_TYPES.items()
-    }
-
-    assert documented_organization_types() == expected
 
 
 def test_manufacturers_never_read_raw_scans() -> None:

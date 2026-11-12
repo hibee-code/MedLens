@@ -15,6 +15,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.engine import Result
 from sqlalchemy.exc import InterfaceError, OperationalError
+from sqlalchemy.exc import TimeoutError as PoolTimeoutError
 
 from medlens.cache.keys import redis_key
 from medlens.db.models import IdempotencyKey, OutboxEvent
@@ -27,7 +28,6 @@ from medlens.modules.knowledge.ingestion import ingest_document as ingest
 from medlens.modules.organizations.models import Invitation
 from medlens.modules.products.models import ReferenceImage
 from medlens.modules.scans.models import Scan, ScanStatus
-from medlens.modules.scans.repository import id_window
 from medlens.ports.storage import ObjectNotFoundError, StorageUnavailableError
 from medlens.queue import outbox
 from medlens.queue.celery_app import celery_app, task
@@ -49,6 +49,7 @@ TRANSIENT_ERRORS: tuple[type[BaseException], ...] = (
     StorageUnavailableError,
     OperationalError,
     InterfaceError,
+    PoolTimeoutError,
     RedisConnectionError,
     RedisTimeoutError,
     TimeoutError,
@@ -78,7 +79,7 @@ class _ScanTask(Task):  # type: ignore[misc]
             session.execute(
                 update(Scan)
                 .where(
-                    id_window(scan_id),
+                    Scan.id_window(scan_id),
                     Scan.status.in_([ScanStatus.RECEIVED, ScanStatus.PROCESSING]),
                 )
                 .values(status=ScanStatus.FAILED, error_code="retries_exhausted")

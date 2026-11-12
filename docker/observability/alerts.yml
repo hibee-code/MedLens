@@ -148,3 +148,15 @@ groups:
           description: >-
             Quote a request_id from the logs to find the error (and its trace, when tracing is
             on). medlens_dependency_up shows whether a dependency is down.
+
+      - alert: MedLensDatabasePoolExhausted
+        expr: sum(rate(medlens_db_pool_exhausted_total[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "API requests are refused with 503: no free database connection"
+          description: >-
+            The API containers are overloaded (CPU or database). Add API containers, or raise
+            MEDLENS_DATABASE__POOL_SIZE together with PgBouncer's default_pool_size and Postgres
+            max_connections. The load test (scripts/load_test.py) measures a container's capacity.

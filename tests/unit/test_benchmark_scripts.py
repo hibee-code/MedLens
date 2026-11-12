@@ -123,3 +123,33 @@ def test_questions_name_documents_by_file_or_title(tmp_path: Path) -> None:
     assert questions[0].expected_title.startswith("SAMPLE Recall Notice")
     assert questions[1].expected_title == "NAFDAC Circular 12/2026"
     assert (questions[2].expected_title, questions[2].answerable) == (None, False)
+
+
+load = script("load_test")
+
+
+def test_load_test_statistics_merge_across_client_processes() -> None:
+    first, second = load.Stats(), load.Stats()
+    for seconds in (0.010, 0.020, 0.030):
+        first.record("GET /products/{nafdac}", "200", seconds)
+    second.record("GET /products/{nafdac}", "503", 0.5)
+    first.end_to_end, first.fast_path = [2.0, 4.0], 1
+    second.queue_peak, second.dropped = 12.0, 3
+
+    merged, elapsed = load.merge([(first, 10.0), (second, 12.0)])
+    report = load.summary(merged, elapsed)
+
+    reads = report["GET /products/{nafdac}"]
+    assert reads["count"] == 4
+    assert reads["statuses"] == {"200": 3, "503": 1}
+    assert reads["success_rate"] == 0.75
+    assert reads["latency_ms"]["max"] == 500
+    assert report["scan_to_verdict_ms"]["fast_path_share"] == 0.5
+    assert (report["scan_queue_peak"], report["dropped_by_client"]) == (12.0, 3)
+    assert load.percentile([1.0, 2.0, 3.0, 4.0], 0.5) == 3.0
+
+
+def test_load_test_photos_are_all_different() -> None:
+    images = load.photos(5)
+
+    assert len(set(images)) == 5  # no scan is answered as a duplicate

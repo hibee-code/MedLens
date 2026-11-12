@@ -18,7 +18,8 @@ right reading as a miss. The report says whether the sample is large enough for 
 (--min-photos, 100) and which engine reads each field best.
 
 The synthetic packs in seed/test_packs work as a smoke test only. The decision needs 100+ real,
-labelled photos of Nigerian packs (docs/ocr-benchmark.md).
+labelled photos of Nigerian packs: phone photos in ordinary light, location data stripped, kept
+outside Git, one labels.csv row per photo (file,nafdac_number,brand,batch_number,expiry).
 """
 
 import argparse

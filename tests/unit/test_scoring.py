@@ -194,14 +194,6 @@ def test_custom_thresholds_apply() -> None:
     assert strict.score(identified(outside_distribution=1.0)).verdict is Verdict.SUSPICIOUS
 
 
-def test_the_documented_weights_match_the_code() -> None:
-    from pathlib import Path
-
-    docs = (Path(__file__).resolve().parents[2] / "docs" / "scoring.md").read_text()
-    for name, weight in WEIGHTS.items():
-        assert f"| `{name.value}` | {weight:.2f} |" in docs, name
-
-
 def test_settings_build_the_scorer_and_pipeline(settings_factory) -> None:  # type: ignore[no-untyped-def]
     from medlens.modules.verification.service import pipeline_config, scorer_for
 

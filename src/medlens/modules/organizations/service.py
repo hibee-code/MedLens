@@ -1,6 +1,6 @@
 """Organization membership: listing members, assigning roles, removing members.
 
-Rules (docs/rbac.md):
+Rules:
 * organization admins act only on their own organization; any other organization answers 404;
   platform admins act anywhere;
 * the role must be an organization role valid for the organization's type, and the actor must

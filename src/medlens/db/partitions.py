@@ -8,9 +8,37 @@ month, creating that month's partition fails until those rows are moved out.
 """
 
 from collections.abc import Callable
-from datetime import date
+from datetime import date, timedelta
+from typing import Any
+from uuid import UUID
+
+from sqlalchemy import ColumnElement
+from sqlalchemy.orm import InstrumentedAttribute
+
+from medlens.core.ids import uuid7_time
 
 PARTITION_MONTHS_AHEAD = 3
+# created_at and the UUIDv7 id are taken from the same clock when a row is made; the margin only
+# absorbs clock adjustments between the two calls.
+ID_TIME_MARGIN = timedelta(minutes=5)
+
+
+def id_window(
+    id_column: InstrumentedAttribute[UUID],
+    created_column: InstrumentedAttribute[Any],
+    row_id: UUID,
+) -> ColumnElement[bool]:
+    """``id = row_id`` plus a ``created_at`` window around the time encoded in the UUIDv7, so
+    Postgres prunes a lookup by id to one monthly partition and uses the primary key."""
+    try:
+        made = uuid7_time(row_id)
+    except ValueError:
+        return id_column == row_id  # not a UUIDv7 of ours: a full search finds nothing anyway
+    return (
+        (id_column == row_id)
+        & (created_column >= made - ID_TIME_MARGIN)
+        & (created_column <= made + ID_TIME_MARGIN)
+    )
 
 
 def month_start(day: date) -> date:

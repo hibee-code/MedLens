@@ -16,7 +16,7 @@ The evidence bar: each question's best reranker score, answerable and unanswerab
 assistant answers only from passages scoring at least MEDLENS_KNOWLEDGE__MIN_RERANK_SCORE; a
 good bar lies above every unanswerable question's best score and below every answerable one's.
 
-Questions CSV (docs/assistant-eval.md): question, expected_document (a file in
+Questions CSV: question, expected_document (a file in
 seed/documents/index.csv, or a document title), answerable (yes/no).
 """
 

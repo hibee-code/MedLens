@@ -149,6 +149,9 @@ class DatabaseSettings(_Group):
     pgbouncer: bool = False
     pool_size: int = Field(default=10, ge=1)
     max_overflow: int = Field(default=5, ge=0)
+    # How long a request waits for a free connection before 503 with Retry-After. Load test
+    # (scripts/load_test.py, 2.5x a container's capacity): 10 s kept about 117 successful
+    # requests/s, 3 s only 46/s (requests gave up that would have been served).
     pool_timeout_seconds: float = Field(default=10.0, gt=0)
     pool_recycle_seconds: int = Field(default=1800, gt=0)
     connect_timeout_seconds: float = Field(default=5.0, gt=0)
@@ -419,7 +422,7 @@ class KnowledgeSettings(_Group):
 
 
 class VerificationSettings(_Group):
-    """Thresholds of the verification pipeline and WeightedRuleScorer (docs/scoring.md)."""
+    """Thresholds of the verification pipeline and WeightedRuleScorer (verification/scoring.py)."""
 
     # Risk score at or above which a pack is SUSPICIOUS, and at or above which it is also high
     # priority (opens a case).
