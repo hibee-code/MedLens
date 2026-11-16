@@ -1,6 +1,6 @@
 # PostgreSQL 17 with PostGIS and pgvector. pg_trgm, citext and btree_gist ship with the base
 # image's contrib package. Extensions are created by the first Alembic migration (Phase 2).
-FROM postgres:17.11-trixie
+FROM postgres:18.6-trixie
 
 # PostGIS and pgvector are pinned to builds for this server version. On 2026-11-12 the
 # PostgreSQL apt repository's current builds (pgvector 0.8.7-1.pgdg13+2, PostGIS
