@@ -8,10 +8,10 @@
 
 # Base images are written out in FROM (not build args) so Dependabot can update them
 # (.github/dependabot.yml); keep the two python images on the same tag.
-FROM ghcr.io/astral-sh/uv:0.13.6 AS uv
+FROM ghcr.io/astral-sh/uv:0.13.8 AS uv
 
 # ------------------------------------------------------------------------------ builders
-FROM python:3.12.16-slim-trixie AS builder
+FROM python:3.15.0-slim-trixie AS builder
 COPY --from=uv /uv /usr/local/bin/uv
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
@@ -61,7 +61,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --no-default-groups --group vision --group ml --no-editable
 
 # ------------------------------------------------------------------------------ runtime
-FROM python:3.12.16-slim-trixie AS runtime
+FROM python:3.15.0-slim-trixie AS runtime
 # libmagic: python-magic sniffs the real type of uploaded files.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends libmagic1t64 \
