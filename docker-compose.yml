@@ -187,7 +187,7 @@ services:
 
   prometheus:
     profiles: [observability]
-    image: prom/prometheus:v3.15.1
+    image: prom/prometheus:v3.16.0
     volumes:
       - ./docker/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./docker/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
