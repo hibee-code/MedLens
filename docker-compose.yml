@@ -77,7 +77,7 @@ services:
     # Off by default: a debugging tool, not part of the service (Prometheus has the queue
     # metrics and alerts).
     profiles: [flower, observability]
-    image: mher/flower:2.0.1
+    image: mher/flower:2.1.0
     environment:
       CELERY_BROKER_URL: redis://redis:6379/${MEDLENS_REDIS__BROKER_DB:-1}
       FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH:?run make dev-secrets}
