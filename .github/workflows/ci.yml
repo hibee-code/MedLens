@@ -83,7 +83,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       # The worker image itself, from the images job's layer cache: the eval reads the packs
       # with the same Tesseract build as production (the register fields are read only by OCR).
       - uses: docker/build-push-action@v6
@@ -129,7 +129,7 @@ jobs:
         target: [api, worker]
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - uses: docker/build-push-action@v6
         with:
           context: .
