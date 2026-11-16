@@ -96,9 +96,9 @@ def identified(
             Verdict.SUSPICIOUS,
             True,
             (
-                ReasonCode.NAME_MISMATCH,
                 ReasonCode.BATCH_SEEN_WIDELY,
                 ReasonCode.OUTSIDE_DISTRIBUTION,
+                ReasonCode.DETAILS_DO_NOT_MATCH_REGISTER,  # the name, for regulators only
             ),
         ),
         (
@@ -211,3 +211,40 @@ def test_settings_build_the_scorer_and_pipeline(settings_factory) -> None:  # ty
         scorer.score(identified(outside_distribution=1.0, batch_spread=0.25)).verdict
         is Verdict.SUSPICIOUS
     )
+
+
+def test_retired_reason_codes_are_shown_as_their_replacement() -> None:
+    from medlens.modules.verification.codes import current_reason_codes
+
+    assert current_reason_codes(["NAME_MISMATCH", "PACK_EXPIRED"]) == [
+        "DETAILS_DO_NOT_MATCH_REGISTER",
+        "PACK_EXPIRED",
+    ]
+    assert current_reason_codes(["NAME_MISMATCH", "DETAILS_DO_NOT_MATCH_REGISTER"]) == [
+        "DETAILS_DO_NOT_MATCH_REGISTER"
+    ]
+
+
+def test_an_unregistered_number_on_a_registered_brand_is_high_priority() -> None:
+    score = WeightedRuleScorer().score(
+        ScoreInput(
+            product_identified=True,
+            nafdac_confidence=0.93,
+            unregistered_number=True,
+            registration_status=RegistrationStatus.ACTIVE,
+            extraction_confidence=0.9,
+        )
+    )
+
+    assert score.verdict is Verdict.SUSPICIOUS
+    assert score.high_priority
+    assert score.reason_codes == (ReasonCode.NUMBER_DOES_NOT_MATCH_BRAND,)
+
+
+def test_consumers_see_the_coarse_code_for_regulator_only_codes() -> None:
+    from medlens.modules.verification.codes import current_reason_codes
+
+    stored = ["NUMBER_DOES_NOT_MATCH_BRAND", "BATCH_NOT_DECLARED"]
+
+    assert current_reason_codes(stored) == ["DETAILS_DO_NOT_MATCH_REGISTER", "BATCH_NOT_DECLARED"]
+    assert current_reason_codes(stored, regulator=True) == stored

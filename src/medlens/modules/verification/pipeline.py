@@ -32,22 +32,40 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from medlens.core.identifiers import (
     normalize_batch_number,
+    normalize_gtin,
     normalize_nafdac_number,
     sanitize_text,
 )
 from medlens.modules.products.models import RegistrationStatus
-from medlens.modules.verification.catalog import AlertFacts, BatchFacts, Catalog, ProductFacts
+from medlens.modules.verification.catalog import (
+    AlertFacts,
+    BatchFacts,
+    Catalog,
+    GtinOwner,
+    ProductFacts,
+)
 from medlens.modules.verification.codes import ReasonCode
 from medlens.modules.verification.extraction import (
     ExtractedField,
     Extraction,
     FieldSource,
+    brand_presence,
     from_gs1,
     from_ocr,
     name_presence,
     parse_expiry,
 )
+from medlens.modules.verification.pack_details import details_from_readings, read_pack_details
+from medlens.modules.verification.register_check import (
+    RegisterCheck,
+    barcode_signals,
+    check_register,
+    register_signals,
+)
 from medlens.modules.verification.scoring import (
+    ALL_WEIGHTS,
+    BARCODE_WEIGHTS,
+    REGISTER_WEIGHTS,
     UNAVAILABLE,
     WEIGHTS,
     RiskScorer,
@@ -63,7 +81,17 @@ from medlens.ports.llm import LLMPort, LLMUnavailableError
 from medlens.ports.ocr import OcrEngine
 
 StageName = Literal[
-    "quality", "barcode", "ocr", "llm", "match", "batch", "alerts", "visual", "score"
+    "quality",
+    "barcode",
+    "ocr",
+    "llm",
+    "match",
+    "pack_details",
+    "batch",
+    "alerts",
+    "visual",
+    "barcode_owner",
+    "score",
 ]
 MatchMethod = Literal["nafdac_number", "similar_number", "name"]
 
@@ -88,6 +116,9 @@ class PipelineConfig:
     # Matching
     similar_number_threshold: float = 0.6
     name_match_threshold: float = 0.8
+    # A legible NAFDAC number in no registration is set against the brand named on the pack
+    # only when the brand matches this closely (strict: a loose match leaves it UNREGISTERED).
+    brand_match_threshold: float = 0.9
     # Batch spread: more distinct states than this within the window is suspicious.
     spread_window_days: int = 30
     spread_state_limit: int = 3
@@ -96,6 +127,14 @@ class PipelineConfig:
     visual_match: float = 0.85
     visual_mismatch: float = 0.60
     llm_enabled: bool = False
+    # Read the register fields printed on the pack (OCR runs even when the barcode sufficed).
+    read_register_fields: bool = True
+    # Score the register check's mismatches (weights await owner review). The check itself is
+    # always recorded for regulators.
+    register_check_scoring: bool = False
+    # Score a cloned barcode (the GTIN belongs to another registered product); weight awaits
+    # owner review. Recorded in the register check either way.
+    barcode_check_scoring: bool = False
     # Stages that would start later than this are skipped, so every scan finishes.
     deadline_seconds: float = 20.0
 
@@ -132,7 +171,10 @@ class Match:
     product: ProductFacts
     method: MatchMethod
     score: float  # how sure the identification is, 0..1
-    number_name_conflict: bool = False
+    number_name_conflict: bool = False  # the number read is another registered product's
+    # The number read is in no registration, while the pack names this product (brand match of
+    # at least brand_match_threshold): a made-up or altered number on a branded pack.
+    unregistered_number: bool = False
 
 
 @dataclass(slots=True)
@@ -144,6 +186,7 @@ class PipelineResult:
     batch: BatchFacts | None = None
     signals: dict[SignalName, Signal] = field(default_factory=dict)
     stages: list[StageResult] = field(default_factory=list)
+    register_check: RegisterCheck | None = None
 
     @property
     def llm_used(self) -> bool:
@@ -157,16 +200,18 @@ class PipelineResult:
             "signals": {
                 name.value: {
                     "value": signal.value,
-                    "weight": WEIGHTS[name],
+                    "weight": ALL_WEIGHTS[name],
                     **signal.detail,
                 }
                 for name, signal in self.signals.items()
             },
+            "register_check": self.register_check.as_json() if self.register_check else None,
             "match": (
                 {
                     "method": self.match.method,
                     "score": round(self.match.score, 3),
                     "number_name_conflict": self.match.number_name_conflict,
+                    "unregistered_number": self.match.unregistered_number,
                 }
                 if self.match
                 else None
@@ -200,6 +245,21 @@ class PackExtraction(BaseModel):
     product_name: FieldReading
     batch_number: FieldReading
     expiry_date: FieldReading
+    # Register fields (prompt v2): returned only alongside the identity fields, never asked for
+    # alone (CLAUDE.md decision log, register check).
+    active_ingredients: FieldReading | None = None
+    strength: FieldReading | None = None
+    dosage_form: FieldReading | None = None
+    manufacturer: FieldReading | None = None
+
+
+_SCORED_SIGNALS = tuple(WEIGHTS)
+
+
+def _reading(reading: FieldReading | None) -> tuple[str | None, float]:
+    if reading is None or not reading.text:
+        return None, 0.0
+    return sanitize_text(reading.text), reading.confidence
 
 
 class VerificationPipeline:
@@ -236,9 +296,19 @@ class VerificationPipeline:
 
         extraction = self._extract(scan, run)
         match = run.stage("match", lambda: self._match(extraction))
-        signals: dict[SignalName, Signal] = dict.fromkeys(SignalName, UNAVAILABLE)
+        signals: dict[SignalName, Signal] = dict.fromkeys(_SCORED_SIGNALS, UNAVAILABLE)
+        if self._config.register_check_scoring:
+            signals.update(dict.fromkeys(REGISTER_WEIGHTS, UNAVAILABLE))
+        if self._config.barcode_check_scoring:
+            signals.update(dict.fromkeys(BARCODE_WEIGHTS, UNAVAILABLE))
+        register: RegisterCheck | None = None
         batch: BatchFacts | None = None
         pack_expired = self._expired(extraction.expiry_date, None, scan.received_at)
+        if match is not None and self._config.read_register_fields:
+            extraction = (
+                run.stage("pack_details", lambda: self._pack_details(extraction, match.product))
+                or extraction
+            )
         if match is not None:
             signals[SignalName.REGISTRATION] = Signal(
                 _REGISTRATION_RISK[match.product.registration_status],
@@ -260,6 +330,13 @@ class VerificationPipeline:
             visual = run.stage("visual", lambda: self._visual(scan, match.product))
             if visual is not None:
                 signals[SignalName.VISUAL_MISMATCH] = visual
+            gtin = extraction.gtin.value if extraction.gtin else None
+            owner = run.stage("barcode_owner", lambda: self._gtin_owner(gtin)) if gtin else None
+            register = check_register(match.product, extraction, batch, owner)
+            if self._config.register_check_scoring:
+                signals.update(register_signals(register))
+            if self._config.barcode_check_scoring:
+                signals.update(barcode_signals(register))
 
         facts = ScoreInput(
             product_identified=match is not None,
@@ -267,6 +344,7 @@ class VerificationPipeline:
                 extraction.nafdac_number.confidence if extraction.nafdac_number else None
             ),
             number_name_conflict=bool(match and match.number_name_conflict),
+            unregistered_number=bool(match and match.unregistered_number),
             registration_status=match.product.registration_status if match else None,
             pack_expired=pack_expired,
             signals=signals,
@@ -280,6 +358,7 @@ class VerificationPipeline:
             batch=batch,
             signals=signals,
             stages=run.stages,
+            register_check=register,
         )
 
     # ------------------------------------------------------------------ quality
@@ -316,10 +395,13 @@ class VerificationPipeline:
 
         threshold = self._config.min_field_confidence
         engine = self._ocr
-        if extraction.missing(threshold) and engine is not None:
+        wanted = extraction.missing(threshold) or self._config.read_register_fields
+        if wanted and engine is not None:
             ocr = run.stage("ocr", lambda: engine.read(scan.image))
             if ocr is not None:
-                extraction = extraction.merge(from_ocr(ocr.text, ocr.confidence))
+                extraction = extraction.merge(
+                    from_ocr(ocr.text, ocr.confidence, ocr.lines, ocr.words)
+                )
         else:
             run.skip("ocr")
 
@@ -332,6 +414,23 @@ class VerificationPipeline:
         else:
             run.skip("llm")
         return extraction
+
+    def _gtin_owner(self, gtin: str) -> GtinOwner | None:
+        try:
+            normalised = normalize_gtin(gtin)
+        except ValueError:
+            return None
+        return self._catalog.gtin_owner(normalised)
+
+    @staticmethod
+    def _pack_details(extraction: Extraction, product: ProductFacts) -> Extraction:
+        """Register fields from the OCR text, looking also for the registration's own
+        ingredient names; fields the vision LLM returned stay where OCR read nothing."""
+        names = [ingredient.name for ingredient in product.active_ingredients]
+        read = read_pack_details(
+            extraction.text, extraction.text_confidence, names, extraction.line_confidences
+        )
+        return extraction.merge(read)
 
     @staticmethod
     def _llm_fields(llm: LLMPort, scan: ScanInput, missing: list[str]) -> Extraction:
@@ -367,6 +466,14 @@ class VerificationPipeline:
             ),
             expiry_date=field_of(parse_expiry(parsed.expiry_date.text or ""), parsed.expiry_date),
             text=sanitize_text(name) if name else "",
+        ).merge(
+            details_from_readings(
+                ingredients=_reading(parsed.active_ingredients),
+                strengths=_reading(parsed.strength),
+                dosage_form=_reading(parsed.dosage_form),
+                manufacturer=_reading(parsed.manufacturer),
+                cap=LLM_MAX_CONFIDENCE,
+            )
         )
 
     # ------------------------------------------------------------------ match
@@ -393,10 +500,17 @@ class VerificationPipeline:
             named = catalog.products_named_in(text)
             if named and named[0][1] >= config.name_match_threshold:
                 product, score = named[0]
-                # A legible number that is not this product's, and no closer product: the pack
-                # carries a number that does not belong to it.
-                conflict = number is not None and number.confidence >= config.min_field_confidence
-                return Match(product, "name", score, number_name_conflict=conflict)
+                legible = number is not None and number.confidence >= config.min_field_confidence
+                if not legible:
+                    return Match(product, "name", score)
+                # A legible number in no registration (a registered one matched above) on a
+                # pack naming a registered brand: set against the brand only when the match is
+                # strict and rests on the brand's own words, never on its generic name alone;
+                # otherwise the pack stays unidentified (UNREGISTERED).
+                own = brand_presence(product.brand_name, product.generic_name, text)
+                strict = config.brand_match_threshold
+                if score >= strict and own is not None and own >= strict:
+                    return Match(product, "name", score, unregistered_number=True)
         return None
 
     def _names_other_product(self, product: ProductFacts, text: str) -> bool:

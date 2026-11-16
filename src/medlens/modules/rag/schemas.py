@@ -16,6 +16,11 @@ class Question(InputModel):
     )
 
     question: SafeText = Field(min_length=3, max_length=1000)
+    include_low_relevance: bool = Field(
+        default=False,
+        description="Platform admins only (403 otherwise), for debugging: also return the "
+        "passages the evidence bar dropped, in `low_relevance_results`.",
+    )
 
 
 class CitationRead(ReadModel):
@@ -63,12 +68,22 @@ class AnswerRead(ReadModel):
     answer: str | None
     citations: list[CitationRead]
     results: list[SearchResultItem] = Field(
-        description="Search results instead of an answer, when degraded."
+        description=(
+            "Search results instead of an answer, when degraded: only passages that clear the "
+            "evidence bar (reranker score at least MEDLENS_KNOWLEDGE__MIN_RERANK_SCORE, or "
+            "naming the asked NAFDAC number), as the model would have been given."
+        )
     )
     reason: str | None = Field(
         description="Why there is no answer, a stable code: no_matching_documents, weak_evidence "
-        "(no passage relevant enough), model_found_no_answer, citations_not_grounded; when "
+        "(no passage relevant enough), no_relevant_documents (AI unavailable and no passage "
+        "relevant enough to show), model_found_no_answer, citations_not_grounded; when "
         "degraded, why AI is unavailable; when blocked, the claims."
+    )
+    low_relevance_results: list[SearchResultItem] | None = Field(
+        default=None,
+        description="Only when a platform admin sent include_low_relevance: the passages "
+        "below the evidence bar, dropped from `results` and never given to the model.",
     )
     vector_search: bool
     reranked: bool = False

@@ -13,9 +13,22 @@ from medlens.modules.knowledge.models import (
     KnowledgeDocument,
     PublishedAlert,
 )
-from medlens.modules.products.models import Batch, Product, ReferenceImage, ReviewStatus
+from medlens.modules.products.models import (
+    Batch,
+    Product,
+    ProductGtin,
+    ReferenceImage,
+    ReviewStatus,
+)
+from medlens.modules.products.register import ingredients_from_json
 from medlens.modules.scans.models import Scan, ScanStatus
-from medlens.modules.verification.catalog import AlertFacts, BatchFacts, BatchSpread, ProductFacts
+from medlens.modules.verification.catalog import (
+    AlertFacts,
+    BatchFacts,
+    BatchSpread,
+    GtinOwner,
+    ProductFacts,
+)
 from medlens.modules.verification.product_cache import ProductCache
 
 CANDIDATES = 5
@@ -33,6 +46,13 @@ def _facts(product: Product) -> ProductFacts:
         brand_name=product.brand_name,
         generic_name=product.generic_name,
         registration_status=product.registration_status,
+        active_ingredients=ingredients_from_json(product.active_ingredients or []),
+        dosage_form=product.dosage_form,
+        holder_name=product.manufacturer_name,
+        registration_date=product.registration_date,
+        registration_expires_on=product.registration_expires_on,
+        source_url=product.source_url,
+        retrieved_on=product.retrieved_on,
     )
 
 
@@ -105,6 +125,7 @@ class SqlCatalog:
             batch_number=batch.batch_number,
             expires_on=batch.expires_on,
             distribution_states=frozenset(batch.distribution_states),
+            manufactured_on=batch.manufactured_on,
         )
 
     def batch_spread(self, batch_id: UUID, since: datetime, *, exclude_scan: UUID) -> BatchSpread:
@@ -145,6 +166,14 @@ class SqlCatalog:
             )
             for alert in rows
         ]
+
+    def gtin_owner(self, gtin: str) -> GtinOwner | None:
+        row = self._session.execute(
+            select(Product, ProductGtin.source)
+            .join(ProductGtin, ProductGtin.product_id == Product.id)
+            .where(ProductGtin.gtin == gtin)
+        ).first()
+        return GtinOwner(_facts(row[0]), row[1].value) if row else None
 
     def reference_similarity(
         self, product_id: UUID, embedding: list[float], *, model_version: str

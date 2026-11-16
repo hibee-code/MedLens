@@ -34,7 +34,7 @@ def test_import_upserts_and_keeps_manufacturer_links(migrated_settings: Settings
     factory = create_sync_session_factory(engine)
     try:
         with factory() as session, session.begin():
-            new, updated = import_snapshot(session, data, manifest_for(data, 2))
+            _, first_import = import_snapshot(session, data, manifest_for(data, 2))
             manufacturer = Organization(
                 name="Linked Manufacturer", type=OrganizationType.MANUFACTURER
             )
@@ -44,7 +44,7 @@ def test_import_upserts_and_keeps_manufacturer_links(migrated_settings: Settings
             product.manufacturer_org_id = manufacturer.id  # an approved claim
             session.flush()
 
-            again = import_snapshot(session, refreshed_data, manifest_for(refreshed_data, 1))
+            _, again = import_snapshot(session, refreshed_data, manifest_for(refreshed_data, 1))
 
             session.refresh(product)
             suspended = session.scalars(
@@ -54,8 +54,10 @@ def test_import_upserts_and_keeps_manufacturer_links(migrated_settings: Settings
     finally:
         engine.dispose()
 
-    assert (new, updated) == (2, 0)
-    assert again == (0, 1)
+    assert first_import is not None
+    assert again is not None
+    assert (first_import.new, first_import.updated) == (2, 0)
+    assert (again.new, again.updated, again.kept) == (0, 1, 0)
     assert product.brand_name == "Panadol Extra (renamed)"
     assert product.manufacturer_org_id == manufacturer.id  # the import never unlinks
     assert suspended is RegistrationStatus.SUSPENDED
@@ -72,7 +74,7 @@ def test_cli_import_loads_a_local_snapshot(
     monkeypatch.setattr(greenbook, "MANIFEST_PATH", tmp_path / "manifest.json")
     monkeypatch.setattr("medlens.core.config.get_settings", lambda: migrated_settings)
 
-    assert greenbook.main(["import", "--source", str(snapshot)]) == 0
+    assert greenbook.main(["import", "--source", str(snapshot), "--confirm"]) == 0
 
     engine = create_sync_engine(migrated_settings.database, application_name="medlens-tests")
     try:

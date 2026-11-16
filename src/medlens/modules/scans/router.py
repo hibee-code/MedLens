@@ -19,13 +19,20 @@ from medlens.core.uploads import ValidatedImage, validate_image_upload
 from medlens.modules.products.models import Product
 from medlens.modules.rbac.deps import CurrentActor, OptionalActor
 from medlens.modules.scans.models import Scan, ScanStatus, Verdict
-from medlens.modules.scans.schemas import ProductSummary, ScanAccepted, ScanAnalysis, ScanRead
+from medlens.modules.scans.schemas import (
+    ProductSummary,
+    ScanAccepted,
+    ScanAnalysis,
+    ScanRead,
+    register_notice,
+)
 from medlens.modules.scans.service import (
     RedisScanWaiter,
     ScanService,
     ScanSubmission,
     Submitter,
 )
+from medlens.modules.verification.codes import current_reason_codes
 from medlens.ports.storage import StoragePort
 from medlens.ratelimit.deps import limit_scans
 from medlens.resources import Resources, get_app_settings, get_resources, get_storage
@@ -68,13 +75,16 @@ def _read(scan: Scan, product: Product | None, *, analysis: bool) -> ScanRead:
         final_verdict=scan.final_verdict,
         reviewed=scan.reviewed,
         confidence=scan.confidence,
-        reason_codes=list(scan.reason_codes),
+        reason_codes=current_reason_codes(list(scan.reason_codes), regulator=analysis),
         advice_codes=list(scan.advice_codes),
         product=(
             ProductSummary(
                 nafdac_number=product.nafdac_number,
                 brand_name=product.brand_name,
                 generic_name=product.generic_name,
+                source_url=product.source_url,
+                retrieved_on=product.retrieved_on,
+                register_notice=register_notice(product.retrieved_on),
             )
             if product
             else None
@@ -93,6 +103,7 @@ def _read(scan: Scan, product: Product | None, *, analysis: bool) -> ScanRead:
                 processing_ms=scan.processing_ms,
                 error_code=scan.error_code,
                 llm_used=scan.llm_used,
+                register_check=(scan.signals or {}).get("register_check"),
                 pipeline_verdict=scan.pipeline_verdict,
                 override_case_id=scan.override_case_id,
                 overridden_at=scan.overridden_at,

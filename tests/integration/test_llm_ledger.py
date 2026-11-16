@@ -83,7 +83,7 @@ async def test_the_gateway_writes_one_row_per_call(api: Api, app_settings: Setti
     assert row.attempts == 2
     assert (row.input_tokens, row.output_tokens) == (2000, 400)
     assert row.cost_usd == Decimal("0.000400")
-    assert row.prompt_version == "pack_extraction@v1"
+    assert row.prompt_version == "pack_extraction@v2"
     assert ledger.spent_today() >= Decimal("0.0004")
     down = SyncLedger(
         api.sync_sessions, Redis(host="127.0.0.1", port=1, socket_connect_timeout=0.2)

@@ -155,3 +155,11 @@ def test_name_presence_ignores_dosage_words() -> None:
     assert name_presence("Coartem 20/120 Tablets", PACK_TEXT) == 0.0
     assert name_presence("Tablets 500 mg", PACK_TEXT) is None
     assert name_presence("Panadol", "   ") is None
+
+
+def test_ingredient_names_are_not_brand_words() -> None:
+    """Reading only "Paracetamol" off a pack says nothing about the brand "Emzor Paracetamol
+    Syrup": no evidence (presence 0), rather than a partial mismatch."""
+    assert name_presence("Emzor Paracetamol Syrup", "Paracetamol 250 mg/5 ml") == 0.0
+    assert name_presence("Emzor Paracetamol Syrup", "EMZOR paracetamol") == 1.0
+    assert name_presence("Paracetamol 500 mg", "Paracetamol 500 mg") is None

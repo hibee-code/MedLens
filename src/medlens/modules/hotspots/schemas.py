@@ -15,6 +15,11 @@ class HotspotProduct(ReadModel):
     scan_count: int
 
 
+class UnregisteredNumber(ReadModel):
+    nafdac_number: str = Field(description="As read from the pack, or typed by the person.")
+    scan_count: int
+
+
 class Centroid(ReadModel):
     latitude: float
     longitude: float
@@ -28,6 +33,13 @@ class Hotspot(ReadModel):
     severity: Severity = Field(description="low (< 5 scans), medium (5-9), high (10 or more).")
     states: list[NigerianState]
     top_products: list[HotspotProduct] = Field(description="Most flagged matched products.")
+    top_unregistered_numbers: list[UnregisteredNumber] = Field(
+        default_factory=list,
+        description=(
+            "Most frequent NAFDAC numbers on the cluster's UNREGISTERED scans (read from the "
+            "pack, else typed), which match no product and so are not in `top_products`."
+        ),
+    )
     first_seen: datetime
     last_seen: datetime
 
@@ -63,6 +75,9 @@ class HotspotsRead(ReadModel):
                                     "brand_name": "Emzor Paracetamol Syrup",
                                     "scan_count": 7,
                                 }
+                            ],
+                            "top_unregistered_numbers": [
+                                {"nafdac_number": "A4-9917", "scan_count": 5}
                             ],
                             "first_seen": "2026-10-29T14:02:00Z",
                             "last_seen": "2026-11-03T08:41:00Z",

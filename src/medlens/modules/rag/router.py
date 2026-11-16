@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from medlens.ai.gateway.gateway import AsyncLLMGateway
 from medlens.core.config import Settings
-from medlens.core.errors import NotFound
+from medlens.core.errors import Forbidden, NotFound
 from medlens.core.openapi import problem_responses
 from medlens.core.routing import api_v1_router
 from medlens.modules.knowledge.router import ServiceDep as KnowledgeDep
@@ -39,7 +39,10 @@ def get_llm_gateway(request: Request) -> AsyncLLMGateway:
         "`insufficient_evidence` and no model is called; with AI switched off or over budget "
         "it is `degraded` and returns the search results. For pharmacists, manufacturers, "
         "regulators and platform admins. The assistant does not give dosage or diagnostic "
-        "advice and never judges whether a pack is genuine: scan the pack for that."
+        "advice and never judges whether a pack is genuine: scan the pack for that. "
+        "Passages below the evidence bar are never shown; with AI off and none above it, the "
+        "answer is `insufficient_evidence` (no_relevant_documents). Platform admins may send "
+        "`include_low_relevance` to see the dropped passages (403 for anyone else)."
     ),
     responses=problem_responses(401, 403, 422, 429),
     dependencies=[Depends(limit_assistant)],
@@ -51,14 +54,30 @@ async def ask(
     gateway: Annotated[AsyncLLMGateway, Depends(get_llm_gateway)],
     settings: Annotated[Settings, Depends(get_app_settings)],
 ) -> AnswerRead:
-    reply = await AssistantService(knowledge, gateway, settings.knowledge).ask(actor, body.question)
+    _check_debugging(actor, body)
+    reply = await AssistantService(knowledge, gateway, settings.knowledge).ask(
+        actor, body.question, include_low_relevance=body.include_low_relevance
+    )
     return answer_read(body.question, reply)
+
+
+def _check_debugging(actor: Actor, body: Question) -> None:
+    if body.include_low_relevance and not actor.is_platform_admin:
+        raise Forbidden("include_low_relevance is for platform admins (debugging).")
 
 
 def answer_read(question: str, reply: AssistantReply) -> AnswerRead:
     ASSISTANT_REQUESTS.labels(outcome=reply.outcome.value).inc()
     results = search_results(
         question, SearchResult(reply.results, reply.vector_search, reranked=reply.reranked)
+    )
+    dropped = (
+        search_results(
+            question,
+            SearchResult(reply.low_relevance, reply.vector_search, reranked=reply.reranked),
+        ).results
+        if reply.low_relevance is not None
+        else None
     )
     return AnswerRead(
         outcome=reply.outcome,
@@ -76,6 +95,7 @@ def answer_read(question: str, reply: AssistantReply) -> AnswerRead:
             for source in reply.citations
         ],
         results=results.results,
+        low_relevance_results=dropped,
         reason=reply.reason,
         vector_search=reply.vector_search,
         reranked=reply.reranked,
@@ -113,9 +133,12 @@ async def ask_stream(
 ) -> StreamingResponse:
     if not settings.knowledge.assistant_streaming:
         raise NotFound("Streaming is switched off: use POST /api/v1/assistant/ask.")
+    _check_debugging(actor, body)
     service = AssistantService(knowledge, gateway, settings.knowledge)
     events = stream(
-        lambda progress: service.ask(actor, body.question, progress),
+        lambda progress: service.ask(
+            actor, body.question, progress, include_low_relevance=body.include_low_relevance
+        ),
         lambda reply: answer_read(body.question, reply).model_dump(mode="json"),
     )
     return StreamingResponse(

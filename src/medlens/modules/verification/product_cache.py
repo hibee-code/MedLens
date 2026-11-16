@@ -6,6 +6,7 @@ import). Entries expire after MEDLENS_VERIFICATION__PRODUCT_CACHE_SECONDS, and w
 facts clear them (products.cache); Redis errors only skip the cache."""
 
 import json
+from datetime import date
 from uuid import UUID
 
 from redis import Redis
@@ -13,6 +14,7 @@ from redis.exceptions import RedisError
 
 from medlens.modules.products.cache import product_facts_key
 from medlens.modules.products.models import RegistrationStatus
+from medlens.modules.products.register import ingredients_from_json
 from medlens.modules.verification.catalog import ProductFacts
 
 _MISSING = "none"
@@ -41,6 +43,13 @@ class ProductCache:
             brand_name=data["brand_name"],
             generic_name=data["generic_name"],
             registration_status=RegistrationStatus(data["registration_status"]),
+            active_ingredients=ingredients_from_json(data.get("active_ingredients", [])),
+            dosage_form=data.get("dosage_form"),
+            holder_name=data.get("holder_name"),
+            registration_date=_day(data.get("registration_date")),
+            registration_expires_on=_day(data.get("registration_expires_on")),
+            source_url=data.get("source_url"),
+            retrieved_on=_day(data.get("retrieved_on")),
         )
 
     def put(self, nafdac_number: str, facts: ProductFacts | None) -> None:
@@ -54,6 +63,13 @@ class ProductCache:
                     "brand_name": facts.brand_name,
                     "generic_name": facts.generic_name,
                     "registration_status": facts.registration_status.value,
+                    "active_ingredients": [item.as_json() for item in facts.active_ingredients],
+                    "dosage_form": facts.dosage_form,
+                    "holder_name": facts.holder_name,
+                    "registration_date": _iso(facts.registration_date),
+                    "registration_expires_on": _iso(facts.registration_expires_on),
+                    "source_url": facts.source_url,
+                    "retrieved_on": _iso(facts.retrieved_on),
                 }
             )
         )
@@ -61,3 +77,11 @@ class ProductCache:
             self._redis.set(product_facts_key(nafdac_number), value, ex=self._ttl)
         except RedisError:
             return
+
+
+def _iso(day: date | None) -> str | None:
+    return day.isoformat() if day else None
+
+
+def _day(value: str | None) -> date | None:
+    return date.fromisoformat(value) if value else None

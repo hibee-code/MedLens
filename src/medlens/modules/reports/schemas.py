@@ -6,6 +6,7 @@ from pydantic import ConfigDict, Field
 
 from medlens.core.identifiers import NigerianState
 from medlens.core.schemas import ReadModel
+from medlens.modules.products.models import RegistrationStatus
 
 
 class StateCount(ReadModel):
@@ -120,6 +121,10 @@ class ProductWeekCell(ReadModel):
     state: NigerianState | None
     iso_week: str = Field(description="ISO 8601 week, e.g. 2026-W44.")
     flagged_scans: int
+    registration_status: RegistrationStatus
+    registration_inactive: bool = Field(
+        description="The registration is suspended or revoked: the product is flagged."
+    )
 
 
 class ManufacturerReportRead(ReadModel):
@@ -140,6 +145,8 @@ class ManufacturerReportRead(ReadModel):
                             "state": "NG-KN",
                             "iso_week": "2026-W44",
                             "flagged_scans": 7,
+                            "registration_status": "active",
+                            "registration_inactive": False,
                         }
                     ],
                 }

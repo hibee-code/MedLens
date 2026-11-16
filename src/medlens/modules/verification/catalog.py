@@ -10,6 +10,7 @@ from typing import Protocol
 from uuid import UUID
 
 from medlens.modules.products.models import RegistrationStatus
+from medlens.modules.products.register import Ingredient
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,23 @@ class ProductFacts:
     brand_name: str
     generic_name: str
     registration_status: RegistrationStatus
+    # The register entry the pack is checked against (products/register.py).
+    active_ingredients: tuple[Ingredient, ...] = ()
+    dosage_form: str | None = None
+    holder_name: str | None = None
+    registration_date: date | None = None
+    registration_expires_on: date | None = None
+    source_url: str | None = None
+    retrieved_on: date | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class GtinOwner:
+    """The registered product a barcode's GTIN belongs to, and where that mapping came from
+    (products.models.GtinSource: register or manufacturer)."""
+
+    product: ProductFacts
+    source: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +45,7 @@ class BatchFacts:
     batch_number: str
     expires_on: date
     distribution_states: frozenset[str]
+    manufactured_on: date | None = None  # as declared by the manufacturer
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,6 +86,11 @@ class Catalog(Protocol):
     def published_alerts(self, nafdac_number: str, batch_number: str | None) -> list[AlertFacts]:
         """Official, active alerts and recalls naming this product, for every batch or for
         ``batch_number``."""
+        ...
+
+    def gtin_owner(self, gtin: str) -> GtinOwner | None:
+        """The registered product a barcode (a 14-digit GTIN) belongs to, if any, with the
+        mapping's source."""
         ...
 
     def reference_similarity(

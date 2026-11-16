@@ -286,3 +286,12 @@ def test_values_round_trip_through_quoting(tmp_path: Path, value: str) -> None:
     path.write_text(content)
 
     assert _values(path)["MEDLENS_X"] == value
+
+
+def test_flower_starts_only_with_a_profile() -> None:
+    """A debugging tool: `docker compose up` must not start it (profiles flower, observability)."""
+    block = COMPOSE.split("\n  flower:\n", 1)[1].split("\n\n", 1)[0]
+
+    assert "profiles: [flower, observability]" in block
+    core = COMPOSE.split("\n  flower:\n", 1)[0]
+    assert "profiles:" not in core.split("services:", 1)[1]  # api, worker, beat start by default

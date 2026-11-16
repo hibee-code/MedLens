@@ -9,25 +9,32 @@ from medlens.core.routing import api_v1_router
 from medlens.core.uploads import CsvUpload, ValidatedImage, read_csv_upload, validate_image_upload
 from medlens.modules.auth.deps import Meta as RequestMetaDep
 from medlens.modules.products.models import (
+    INACTIVE_REGISTRATIONS,
     ImageSide,
     Product,
+    ProductAuthorization,
     ProductClaim,
     ReferenceImage,
     ReviewStatus,
 )
 from medlens.modules.products.schemas import (
+    AuthorizationCreate,
+    AuthorizationRead,
     BatchImportResult,
     BatchRead,
     BatchWrite,
     ClaimCreate,
     ClaimRead,
+    IngredientRead,
     ProductRead,
     ReferenceImageRead,
     ReviewDecision,
 )
 from medlens.modules.products.service import (
     BatchService,
+    ProductAuthorizationService,
     ProductClaimService,
+    ProductLabel,
     ProductService,
     ReferenceImageService,
 )
@@ -57,7 +64,9 @@ NafdacPath = Annotated[
 ]
 
 
-def _product(product: Product, score: float | None = None) -> ProductRead:
+def _product(
+    product: Product, gtins: dict[UUID, list[str]], score: float | None = None
+) -> ProductRead:
     return ProductRead(
         nafdac_number=product.nafdac_number,
         brand_name=product.brand_name,
@@ -67,21 +76,35 @@ def _product(product: Product, score: float | None = None) -> ProductRead:
         pack_size=product.pack_size,
         manufacturer_name=product.manufacturer_name,
         registration_status=product.registration_status,
+        registration_inactive=product.registration_status in INACTIVE_REGISTRATIONS,
+        registration_date=product.registration_date,
         registration_expires_on=product.registration_expires_on,
+        active_ingredients=[
+            IngredientRead.model_validate(item) for item in product.active_ingredients or []
+        ],
+        source_url=product.source_url,
+        retrieved_on=product.retrieved_on,
+        gtins=gtins.get(product.id, []),
         manufacturer_onboarded=product.manufacturer_org_id is not None,
         match_score=score,
     )
 
 
-def _reference(image: ReferenceImage, nafdac_number: str) -> ReferenceImageRead:
+def _reference(image: ReferenceImage, label: ProductLabel) -> ReferenceImageRead:
     return ReferenceImageRead(
         id=image.id,
-        nafdac_number=nafdac_number,
+        nafdac_number=label.nafdac_number,
         side=image.side,
         status=image.status,
         created_at=image.created_at,
         reviewed_at=image.reviewed_at,
+        registration_inactive=label.registration_inactive,
     )
+
+
+def _batch(batch: Any, label: ProductLabel) -> BatchRead:
+    read = BatchRead.model_validate(batch)
+    return read.model_copy(update={"registration_inactive": label.registration_inactive})
 
 
 def _cursor(row: Product | ReferenceImage) -> Cursor:
@@ -112,13 +135,17 @@ async def list_products(
     service = ProductService(resources.session_factory)
     if query is not None:
         hits = await service.search(query, params.limit)
+        gtins = await service.gtins([hit.product for hit in hits])
         return Page(
-            items=[_product(hit.product, hit.score) for hit in hits],
+            items=[_product(hit.product, gtins, hit.score) for hit in hits],
             next_cursor=None,
             has_more=False,
         )
     rows = await service.list_page(params)
-    return build_page(rows, limit=params.limit, cursor_of=_cursor, to_item=_product)
+    gtins = await service.gtins(rows)
+    return build_page(
+        rows, limit=params.limit, cursor_of=_cursor, to_item=lambda row: _product(row, gtins)
+    )
 
 
 @router.get(
@@ -129,7 +156,9 @@ async def list_products(
     responses=problem_responses(404),
 )
 async def get_product(nafdac_number: NafdacPath, resources: ResourcesDep) -> ProductRead:
-    return _product(await ProductService(resources.session_factory).get(nafdac_number))
+    service = ProductService(resources.session_factory)
+    product = await service.get(nafdac_number)
+    return _product(product, await service.gtins([product]))
 
 
 # ------------------------------------------------------------------ batches
@@ -146,12 +175,13 @@ async def get_product(nafdac_number: NafdacPath, resources: ResourcesDep) -> Pro
 async def list_batches(
     nafdac_number: NafdacPath, actor: CurrentActor, resources: ResourcesDep, params: Params
 ) -> Page[BatchRead]:
-    rows = await BatchService(resources.session_factory).list_page(actor, nafdac_number, params)
+    service = BatchService(resources.session_factory)
+    rows, label = await service.list_page(actor, nafdac_number, params)
     return build_page(
         rows,
         limit=params.limit,
         cursor_of=lambda batch: Cursor(created_at=batch.created_at, id=batch.id),
-        to_item=BatchRead.model_validate,
+        to_item=lambda batch: _batch(batch, label),
     )
 
 
@@ -160,8 +190,9 @@ async def list_batches(
     response_model=BatchRead,
     summary="Declare or update a batch",
     description=(
-        "Creates the batch (201) or replaces its details (200). Only the product's registered "
-        "manufacturer (an approved product claim) can declare its batches."
+        "Creates the batch (201) or replaces its details (200). Only the product's registration "
+        "holder (linked by an approved product claim) or an organisation it authorised "
+        "(recorded by a platform admin) can declare its batches."
     ),
     responses=_BATCH_CREATED | problem_responses(401, 403, 404, 422),
 )
@@ -174,12 +205,12 @@ async def put_batch(
     meta: RequestMetaDep,
     response: Response,
 ) -> BatchRead:
-    batch, created = await BatchService(resources.session_factory).put(
+    batch, created, label = await BatchService(resources.session_factory).put(
         actor, nafdac_number, batch_number, body, meta
     )
     if created:
         response.status_code = status.HTTP_201_CREATED
-    return BatchRead.model_validate(batch)
+    return _batch(batch, label)
 
 
 @router.post(
@@ -227,12 +258,12 @@ async def list_reference_images(
     params: Params,
 ) -> Page[ReferenceImageRead]:
     service = ReferenceImageService(resources.session_factory, storage)
-    images, number = await service.list_page(actor, nafdac_number, params)
+    images, label = await service.list_page(actor, nafdac_number, params)
     return build_page(
         images,
         limit=params.limit,
         cursor_of=_cursor,
-        to_item=lambda image: _reference(image, number),
+        to_item=lambda image: _reference(image, label),
     )
 
 
@@ -242,7 +273,8 @@ async def list_reference_images(
     response_model=ReferenceImageRead,
     summary="Upload a reference image of the genuine pack",
     description=(
-        "Multipart upload (`image`, `side`) by the product's registered manufacturer. The image "
+        "Multipart upload (`image`, `side`) by the product's registration holder or an "
+        "organisation it authorised. The image "
         "is validated and re-encoded like scan photos. It is used for visual matching only "
         "after a reviewer approves it."
     ),
@@ -258,8 +290,8 @@ async def upload_reference_image(
     meta: RequestMetaDep,
 ) -> ReferenceImageRead:
     service = ReferenceImageService(resources.session_factory, storage)
-    reference, number = await service.upload(actor, nafdac_number, image, side, meta)
-    return _reference(reference, number)
+    reference, label = await service.upload(actor, nafdac_number, image, side, meta)
+    return _reference(reference, label)
 
 
 @reference_images_router.post(
@@ -281,8 +313,86 @@ async def review_reference_image(
     meta: RequestMetaDep,
 ) -> ReferenceImageRead:
     service = ReferenceImageService(resources.session_factory, storage)
-    reference, number = await service.review(actor, image_id, body.status, body.note, meta)
-    return _reference(reference, number)
+    reference, label = await service.review(actor, image_id, body.status, body.note, meta)
+    return _reference(reference, label)
+
+
+# ------------------------------------------------------------------ authorisations
+def _authorization(row: ProductAuthorization, label: ProductLabel) -> AuthorizationRead:
+    return AuthorizationRead(
+        id=row.id,
+        nafdac_number=label.nafdac_number,
+        organization_id=row.organization_id,
+        note=row.note,
+        active=row.revoked_at is None,
+        created_at=row.created_at,
+        revoked_at=row.revoked_at,
+    )
+
+
+@router.post(
+    "/{nafdac_number}/authorizations",
+    status_code=status.HTTP_201_CREATED,
+    response_model=AuthorizationRead,
+    summary="Authorise another organisation for a product",
+    description=(
+        "A platform admin records that the registration holder authorises an organisation "
+        "(a contract manufacturer, an importer) to declare batches and upload reference images "
+        "for this product; the holder's evidence goes in `note`. The product must have a linked "
+        "holder (an approved product claim). Audited."
+    ),
+    responses=problem_responses(401, 403, 404, 409, 422),
+)
+async def grant_authorization(
+    nafdac_number: NafdacPath,
+    body: AuthorizationCreate,
+    actor: CurrentActor,
+    resources: ResourcesDep,
+    meta: RequestMetaDep,
+) -> AuthorizationRead:
+    service = ProductAuthorizationService(resources.session_factory)
+    row, label = await service.grant(actor, nafdac_number, body.organization_id, body.note, meta)
+    return _authorization(row, label)
+
+
+@router.get(
+    "/{nafdac_number}/authorizations",
+    response_model=list[AuthorizationRead],
+    summary="List a product's authorised organisations",
+    description=(
+        "Current and revoked authorisations, newest first. For platform admins and the "
+        "registration holder."
+    ),
+    responses=problem_responses(401, 403, 404, 422),
+)
+async def list_authorizations(
+    nafdac_number: NafdacPath, actor: CurrentActor, resources: ResourcesDep
+) -> list[AuthorizationRead]:
+    service = ProductAuthorizationService(resources.session_factory)
+    rows, label = await service.list_for_product(actor, nafdac_number)
+    return [_authorization(row, label) for row in rows]
+
+
+@router.post(
+    "/{nafdac_number}/authorizations/{authorization_id}/revoke",
+    response_model=AuthorizationRead,
+    summary="Revoke an authorisation",
+    description=(
+        "The organisation can no longer declare batches or upload reference images for the "
+        "product; what it declared stays. Platform admins only; audited."
+    ),
+    responses=problem_responses(401, 403, 404, 409, 422),
+)
+async def revoke_authorization(
+    nafdac_number: NafdacPath,
+    authorization_id: UUID,
+    actor: CurrentActor,
+    resources: ResourcesDep,
+    meta: RequestMetaDep,
+) -> AuthorizationRead:
+    service = ProductAuthorizationService(resources.session_factory)
+    row, label = await service.revoke(actor, nafdac_number, authorization_id, meta)
+    return _authorization(row, label)
 
 
 # ------------------------------------------------------------------ product claims

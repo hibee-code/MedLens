@@ -5,13 +5,13 @@ COMPOSE ?= docker compose
 # e.g. `make up PROFILES=observability`
 PROFILES ?=
 SEED_ARGS ?=
-# e.g. `make greenbook-import GREENBOOK_SOURCE=s3://bucket/greenbook-2026-11-03.csv.gz`
+# e.g. `make greenbook-import-snapshot GREENBOOK_SOURCE=s3://bucket/greenbook-2026-11-03.csv.gz CONFIRM=1`
 GREENBOOK_SOURCE ?=
 INFRA := postgres pgbouncer redis minio
 
 .PHONY: help dev-secrets env install install-ml dev test test-unit test-integration lint format typecheck check \
-	openapi migrate seed embeddings greenbook-import up infra down logs eval demo test-packs \
-	audit ci dashboard onnx test-models retrieval-eval ocr-benchmark load-test
+	openapi migrate seed embeddings greenbook-import-snapshot up infra down logs eval demo test-packs \
+	audit ci dashboard onnx test-models retrieval-eval ocr-benchmark load-test greenbook-add-rows demo-reset eval-image
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_.-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -90,11 +90,23 @@ embeddings: .env ## Queue embeddings for reference images and document chunks th
 	$(UV) run celery -A medlens.queue.celery_app:celery_app call medlens.reference_images.backfill
 	$(UV) run celery -A medlens.queue.celery_app:celery_app call medlens.knowledge.backfill_embeddings
 
-greenbook-import: .env ## Load the full Greenbook snapshot (seed/PROVENANCE.md); checksum-verified
-	$(UV) run python -m medlens.seed.greenbook import $(if $(GREENBOOK_SOURCE),--source $(GREENBOOK_SOURCE))
+demo-reset: .env ## Local only: report the demo's scans, cases, hotspot snapshots and queued events; delete with CONFIRM=1
+	$(UV) run python -m medlens.seed.demo_reset $(if $(filter 1,$(CONFIRM)),--confirm)
+
+greenbook-add-rows: .env ## Hand-typed register rows: report (FILE=seed/greenbook_manual.csv), apply with CONFIRM=1
+	$(UV) run python -m medlens.seed.register_import $(or $(FILE),seed/greenbook_manual.csv) $(if $(filter 1,$(CONFIRM)),--confirm)
+
+greenbook-import-snapshot: .env ## Greenbook snapshot (seed/PROVENANCE.md): report with conflicts, apply with CONFIRM=1; checksum-verified
+	$(UV) run python -m medlens.seed.greenbook import $(if $(GREENBOOK_SOURCE),--source $(GREENBOOK_SOURCE)) $(if $(filter 1,$(CONFIRM)),--confirm)
 
 eval: .env ## Score the pipeline on seed/test_packs and the assistant on seed/eval_questions.csv
 	$(UV) run python scripts/eval.py
+
+WORKER_IMAGE ?= medlens-worker:local
+eval-image: ## The scan eval inside the worker image (its Tesseract, as in production and CI)
+	docker run --rm -e PROMETHEUS_MULTIPROC_DIR=/tmp -v "$(CURDIR)/scripts:/app/scripts:ro" \
+	  -v "$(CURDIR)/seed:/app/seed:ro" --entrypoint python $(WORKER_IMAGE) \
+	  /app/scripts/eval.py --skip-assistant --min-accuracy 0.9
 
 QUESTIONS ?= seed/eval_questions.csv
 retrieval-eval: .env ## Recall/MRR per reranker and the evidence bar's calibration (QUESTIONS=file.csv)

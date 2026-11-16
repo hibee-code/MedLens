@@ -121,25 +121,46 @@ def owns_product(actor: Actor, product: Product) -> bool:
     )
 
 
-def can_read_batches(actor: Actor, product: Product) -> bool:
+def authorized_for(actor: Actor, authorized: frozenset[UUID]) -> bool:
+    """The actor's organisation is one the registration holder authorised for the product
+    (product_authorizations, recorded by a platform admin)."""
+    organization = actor.organization
+    return organization is not None and organization.id in authorized
+
+
+def can_read_batches(
+    actor: Actor, product: Product, authorized: frozenset[UUID] = frozenset()
+) -> bool:
     """Batch numbers would help counterfeiters label fakes, so they are not public: the
-    product's manufacturer, regulators and platform admins only."""
+    product's registration holder, organisations it authorised, regulators and platform
+    admins only."""
     if actor.is_platform_admin or owns_product(actor, product):
+        return True
+    if authorized_for(actor, authorized):
         return True
     organization = actor.organization
     return organization is not None and organization.type is OrganizationType.REGULATOR
 
 
-def can_write_batches(actor: Actor, product: Product) -> bool:
+def can_write_batches(
+    actor: Actor, product: Product, authorized: frozenset[UUID] = frozenset()
+) -> bool:
+    """The registration holder (linked by an approved claim) or an organisation it authorised."""
     if actor.is_platform_admin:
         return True
-    return actor.can(Permission.BATCH_WRITE) and owns_product(actor, product)
+    return actor.can(Permission.BATCH_WRITE) and (
+        owns_product(actor, product) or authorized_for(actor, authorized)
+    )
 
 
-def can_upload_reference_images(actor: Actor, product: Product) -> bool:
+def can_upload_reference_images(
+    actor: Actor, product: Product, authorized: frozenset[UUID] = frozenset()
+) -> bool:
     if actor.is_platform_admin:
         return True
-    return actor.can(Permission.REFERENCE_IMAGE_WRITE) and owns_product(actor, product)
+    return actor.can(Permission.REFERENCE_IMAGE_WRITE) and (
+        owns_product(actor, product) or authorized_for(actor, authorized)
+    )
 
 
 def can_review_products(actor: Actor) -> bool:
@@ -147,8 +168,14 @@ def can_review_products(actor: Actor) -> bool:
     return actor.is_user and actor.can(Permission.PRODUCT_REVIEW)
 
 
-def can_read_reference_images(actor: Actor, product: Product) -> bool:
-    return can_review_products(actor) or owns_product(actor, product)
+def can_read_reference_images(
+    actor: Actor, product: Product, authorized: frozenset[UUID] = frozenset()
+) -> bool:
+    return (
+        can_review_products(actor)
+        or owns_product(actor, product)
+        or authorized_for(actor, authorized)
+    )
 
 
 # ------------------------------------------------------------------ organizations

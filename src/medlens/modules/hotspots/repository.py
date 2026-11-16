@@ -21,7 +21,10 @@ METRIC_SRID = 32632
 _CLUSTERS = text(
     """
 WITH points AS (
-    SELECT s.id, s.created_at, s.matched_product_id, s.state,
+    SELECT s.id, s.created_at, s.matched_product_id, s.state, s.final_verdict,
+           -- the NAFDAC number read from the pack, else the one the person typed
+           coalesce(s.extracted->'nafdac_number'->>'value',
+                    s.extracted->>'claimed_nafdac_number') AS read_number,
            ST_Transform(s.location_coarse::geometry, 32632) AS geom
     FROM scans s
     WHERE s.created_at >= :since AND s.created_at < :until
@@ -50,7 +53,8 @@ SELECT c.cluster_id, c.scan_count, c.first_seen, c.last_seen, c.states,
        ST_X(ST_Transform(c.centre, 4326)) AS longitude,
        (SELECT max(ST_Distance(k.geom, c.centre)) FROM clustered k
          WHERE k.cluster_id = c.cluster_id) AS radius_m,
-       top.products AS top_products
+       top.products AS top_products,
+       unregistered.numbers AS top_unregistered_numbers
 FROM centres c
 LEFT JOIN LATERAL (
     SELECT coalesce(json_agg(json_build_object(
@@ -65,6 +69,18 @@ LEFT JOIN LATERAL (
           LIMIT :top_products) t
     JOIN products pr ON pr.id = t.product_id
 ) top ON true
+LEFT JOIN LATERAL (
+    SELECT coalesce(json_agg(json_build_object(
+               'nafdac_number', u.read_number, 'scan_count', u.n) ORDER BY u.n DESC,
+               u.read_number), '[]') AS numbers
+    FROM (SELECT k.read_number, count(*) AS n
+          FROM clustered k
+          WHERE k.cluster_id = c.cluster_id AND k.final_verdict = 'UNREGISTERED'
+            AND k.read_number IS NOT NULL
+          GROUP BY k.read_number
+          ORDER BY n DESC, k.read_number
+          LIMIT :top_products) u
+) unregistered ON true
 ORDER BY c.scan_count DESC, c.last_seen DESC
 LIMIT :max_clusters
 """
@@ -111,6 +127,8 @@ class Cluster:
     longitude: float
     radius_m: float
     top_products: list[dict[str, Any]]
+    # Unregistered packs have no product: the numbers printed on (or typed for) them instead.
+    top_unregistered_numbers: list[dict[str, Any]]
 
     @property
     def product_ids(self) -> list[UUID]:
@@ -128,6 +146,7 @@ def _cluster(row: Any) -> Cluster:
         longitude=float(row.longitude),
         radius_m=round(float(row.radius_m or 0.0), 1),
         top_products=list(row.top_products or []),
+        top_unregistered_numbers=list(row.top_unregistered_numbers or []),
     )
 
 

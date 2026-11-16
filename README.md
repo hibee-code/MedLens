@@ -55,6 +55,7 @@ Requirements: Docker, [uv](https://docs.astral.sh/uv/), Python 3.12.
 ```bash
 make dev-secrets     # create .env with random local secrets
 make demo            # build and start the stack, migrate, seed, run the demo requests
+make demo-reset      # local only: report the demo's scans, cases and queued events; CONFIRM=1 deletes them
 ```
 
 Step by step:
@@ -68,6 +69,8 @@ make eval            # scan accuracy and assistant metrics (see below)
 make check           # lint, mypy --strict, all tests with coverage (needs Docker)
 make audit           # pip-audit on the locked dependencies, bandit on src
 make ci              # check + audit (CI also runs the eval, the model test and both images)
+make greenbook-add-rows FILE=seed/greenbook_manual.csv [CONFIRM=1]  # hand-typed register rows: report, then apply
+make greenbook-import-snapshot [CONFIRM=1]  # a checksum-verified Greenbook snapshot: report, then apply
 make onnx test-models          # export the models locally, compare them with the originals
 make retrieval-eval            # recall/MRR per reranker, evidence-bar calibration
 make ocr-benchmark PHOTOS=dir  # OCR engines on labelled photos (see scripts/ocr_benchmark.py)
@@ -105,7 +108,7 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
 |---|---|---|
 | `POST /scans`, `GET /scans/{id}`, `GET /scans` | anyone (guests with `X-Device-Id`) | Submit a photo (202, then poll), read verdicts |
 | `GET /cases`, `POST /cases/{id}/lab-result`, `/cases/{id}/override`, `GET /cases/{id}/image` | regulators | Review high-risk scans, record lab results, decide final verdicts (audited, reversible) |
-| `GET /hotspots` | regulators | PostGIS DBSCAN clusters of flagged scans, cached 5 minutes |
+| `GET /hotspots` | regulators | PostGIS DBSCAN clusters of flagged scans with their top products and, for unregistered packs, the NAFDAC numbers read; cached 5 minutes |
 | `GET /stats/summary` | regulators, admins | Scans by verdict, state and day; LLM share and cost |
 | `GET /stats/accuracy` | regulators, admins | The pipeline's verdicts against lab results: precision, recall |
 | `GET /manufacturer/scans` | manufacturers | Flagged scans of own products by state and week, cells < 5 suppressed |
@@ -131,7 +134,9 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
 * **Controls.** One kill switch (`MEDLENS_LLM__ENABLED`) plus a per-feature switch for the
   assistant; a daily budget checked before every call; a circuit breaker; every call metered
   (`llm_calls`: model, prompt version, tokens, cost, latency, outcome). Without AI, scans still
-  get verdicts and the assistant returns search results.
+  get verdicts and the assistant returns the search results that clear the evidence bar
+  (none left: `insufficient_evidence`, `no_relevant_documents`). Platform admins can ask for the
+  dropped passages with `include_low_relevance` (debugging).
 * **Retrieval.** Questions are embedded by a worker (cached in Redis for a day), searched by
   vector and by keyword and NAFDAC number, fused with Reciprocal Rank Fusion, then the top 20
   are reranked by a cross-encoder. Each step degrades: no worker means keyword search only, no
@@ -156,6 +161,67 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
   OCR benchmark in the roadmap). The sample documents in `seed/documents` are marked as samples,
   not official notices. Coordinates are not mapped to states until boundary data is loaded.
 
+## Data sources
+
+* **Register (NAFDAC Greenbook).** Products: brand name, active ingredients and strengths,
+  dosage form, NAFDAC number, registration holder, registration and expiry dates, status, and
+  the Greenbook page and date each entry was read from. MedLens holds a **local copy**; it never
+  queries greenbook.nafdac.gov.ng while scanning, and every scan result says so ("Registration
+  data from the NAFDAC Greenbook, retrieved <date>. Verify on greenbook.nafdac.gov.ng.").
+* **Batches and reference images (manufacturers).** Declared only by the registration holder
+  (linked by an approved product claim) or an organisation it authorised (recorded by a platform
+  admin: `POST /products/{nafdac}/authorizations`). Reference images count only after a
+  regulator approves them. When a registration is suspended or revoked, its batches and images
+  are kept and flagged (`registration_inactive`) in listings and the manufacturer report.
+* **Alerts and recalls (regulators).** Uploaded to the knowledge base; official, active ones are
+  scan signals.
+
+**Refreshing the register.** Search the Greenbook by hand, enter each entry in
+`seed/greenbook_manual.csv` (one row per registration; ingredients and strengths as parallel
+lists separated by `; `; `source_url` the Greenbook page, `retrieved_on` the date; optionally
+`gtin`, the product's barcode numbers separated by `; `, each belonging to one product only,
+with `gtin_source` saying where they come from: `register` or `manufacturer`), then run
+`make greenbook-add-rows FILE=seed/greenbook_manual.csv`. It validates every row and prints what
+would be added, changed or left unchanged and which rows are invalid and why; `CONFIRM=1`
+applies it (all or nothing, audited, cached product facts cleared). Nothing is ever deleted:
+mark withdrawn registrations suspended or revoked. Full snapshots use
+`make greenbook-import-snapshot` (checksum-verified, see `seed/PROVENANCE.md`; it too reports
+first and applies with `CONFIRM=1`). Every product records whether a snapshot or the hand-typed
+file last wrote it. Where both describe a product, the row retrieved most recently
+(`retrieved_on`) wins, and on the same day the snapshot; both reports list every conflicting
+field, with both values, both dates and the winner, before anything is applied. A snapshot
+never deletes a hand-typed row.
+
+**The register check.** After the NAFDAC number identifies the product, the pack's
+ingredients, strengths, dosage form, company names and manufacture date (read by OCR, by
+dictionary and pattern, never by calling the vision model just for them) are compared with the
+registration, field by field: matched, mismatched, unread or not in the register. Regulators
+and platform admins see the whole check (`analysis.register_check`); consumers see at most the
+coarse reason `DETAILS_DO_NOT_MATCH_REGISTER`, so the check does not teach counterfeiters which
+field to fix (a misread product name included). A mismatch raises risk only when it was read
+with confidence of at least 0.85, Tesseract's own for the line it came from; otherwise
+regulators see it with `counted: false`. An unread field lowers confidence and never raises
+risk. Weights (decision log): ingredients 0.60, strength 0.50, dosage form 0.25, holder 0.10,
+manufacture outside the registration 0.25. The check also compares the barcode: a GTIN that
+belongs to another holder's registered product than the printed NAFDAC number is a cloned
+barcode (0.60); the same holder's other product is likely a re-registration (0.25). It counts
+only when the GTIN came from the barcode itself and the NAFDAC number was read with confidence
+of at least 0.85 (the lowest confidence of the number's own words). A pack whose printed NAFDAC
+number is in no registration but whose brand matches a registered product closely (score at
+least 0.9, on the brand's own words: never on the generic name alone) is
+SUSPICIOUS and linked to that product (hotspots, its manufacturer's report): regulators see
+`NUMBER_DOES_NOT_MATCH_BRAND`, consumers `DETAILS_DO_NOT_MATCH_REGISTER`; with a looser match
+it stays UNREGISTERED. The 0.85 bars are provisional until the real-photo OCR benchmark;
+`medlens_scan_signals_held_back_total` counts what they hold back, per signal. Both are on by default (`MEDLENS_VERIFICATION__REGISTER_CHECK_SCORING`,
+`MEDLENS_VERIFICATION__BARCODE_CHECK_SCORING`; scorer `weighted-rules-v3+barcode`). Regulators
+see where each GTIN mapping came from (`register` or `manufacturer`).
+
+**Limits.** The register is a copy, as current as its last import, and the hand-typed file
+covers only what was entered. The company on a pack may legitimately differ from the holder (a
+foreign manufacturer, a distributor of the same group), so the holder check is weak by design.
+The pack reader knows about 150 common ingredient names plus each registration's own; an
+ingredient outside both reads as unread, not as a mismatch.
+
 ## Operations
 
 * **Metrics.** The API serves `/metrics` on its port (do not route it publicly); workers serve
@@ -165,7 +231,8 @@ All under `/api/v1`; the OpenAPI document (`/docs`, `openapi.json`) has examples
   checks, scan backlog and full queue, slow or failing scans, dead letters, failing tasks, LLM
   budget nearly spent or spent, LLM errors, HTTP 5xx). Grafana provisions the MedLens dashboard
   (`make dashboard` regenerates it). `docker compose --profile observability up -d --wait` adds
-  the collector, Jaeger, Prometheus (:9090) and Grafana (:3000).
+  the collector, Jaeger, Prometheus (:9090), Grafana (:3000) and Flower (:5555);
+  `--profile flower` adds Flower alone (it does not start by default).
 * **Tracing and errors.** Set `MEDLENS_OBSERVABILITY__OTLP_ENDPOINT` (for example
   `http://otel-collector:4318`) to export traces of requests, SQL, Redis, outgoing HTTP and
   Celery tasks; `MEDLENS_OBSERVABILITY__TRACES_SAMPLE_RATE` samples them (0.1). Log lines carry
@@ -208,10 +275,15 @@ environment before launch: real photos may take longer to read than the syntheti
 
 ## Evaluation
 
-`make eval` runs `scripts/eval.py`: the pipeline on the 17 packs in `seed/test_packs` (expected
-verdicts in `expected.csv`), and the assistant on `seed/eval_questions.csv` (answerable and
-unanswerable questions). It prints accuracy per verdict, the share of scans that needed the
-LLM, mean latency, citation correctness, abstain accuracy and total cost. With
+`make eval` runs `scripts/eval.py`: the pipeline on the 20 packs in `seed/test_packs` (expected
+verdicts in `expected.csv`; synthetic barcodes of the eval's products in `gtins.csv`), and the
+assistant on `seed/eval_questions.csv` (answerable and unanswerable questions). It prints
+accuracy per verdict, each pack's verdict and the signals that raised it, the share of scans
+that needed the LLM, mean latency, citation correctness, abstain accuracy and total cost.
+`--register-check-scoring` / `--no-register-check-scoring` (and the same for
+`--barcode-check-scoring`) compare the scorer with and without those signals. The register
+fields are read only by Tesseract: `make eval-image` runs the scan eval inside the worker image,
+with production's Tesseract, as CI does. With
 `ANTHROPIC_API_KEY` set it uses Claude; otherwise stand-ins (the vision stand-in reads each
 pack's printed fields from the CSV). Where the models are installed (the worker image, or
 `make install-ml` and `make onnx`), the assistant's retrieval uses vectors and the reranker,

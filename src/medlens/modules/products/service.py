@@ -8,10 +8,12 @@ claims change what the pipeline trusts, so a person with ``product:review`` appr
 
 import csv
 import io
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
 
+import structlog
 from pydantic import ValidationError
 from sqlalchemy import ColumnElement, true
 from sqlalchemy.exc import IntegrityError
@@ -31,15 +33,19 @@ from medlens.modules.organizations.models import (
     OrganizationType,
 )
 from medlens.modules.products.models import (
+    INACTIVE_REGISTRATIONS,
     Batch,
     ImageSide,
     Product,
+    ProductAuthorization,
     ProductClaim,
     ReferenceImage,
+    RegistrationStatus,
     ReviewStatus,
 )
 from medlens.modules.products.repository import (
     BatchRepository,
+    ProductAuthorizationRepository,
     ProductClaimRepository,
     ProductRepository,
     ReferenceImageRepository,
@@ -61,9 +67,39 @@ IMPORT_COLUMNS = (
     "distribution_states",  # codes or names, separated by ; or ,
 )
 
+log = structlog.stdlib.get_logger(__name__)
+
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+@dataclass(frozen=True, slots=True)
+class ProductLabel:
+    """What responses about a product's batches and images show of the product itself."""
+
+    nafdac_number: str
+    registration_status: RegistrationStatus
+
+    @property
+    def registration_inactive(self) -> bool:
+        """Suspended or revoked: its batches and images are kept but flagged."""
+        return self.registration_status in INACTIVE_REGISTRATIONS
+
+    @classmethod
+    def of(cls, product: Product) -> "ProductLabel":
+        return cls(product.nafdac_number, product.registration_status)
+
+
+async def _authorized(session: AsyncSession, product: Product) -> frozenset[UUID]:
+    return await ProductAuthorizationRepository(session).active_organizations(product.id)
+
+
+def _warn_without_holder(product: Product, action: str) -> None:
+    """Products whose holder has no linked organisation keep working (platform admins may still
+    write to them), but every such write is logged."""
+    if product.manufacturer_org_id is None:
+        log.warning("products.no_holder_link", nafdac_number=product.nafdac_number, action=action)
 
 
 def _org_id(actor: Actor) -> UUID | None:
@@ -117,6 +153,11 @@ class ProductService:
         async with UnitOfWork(self._sessions) as uow:
             return await _product(uow.session, nafdac_number)
 
+    async def gtins(self, products: Sequence[Product]) -> dict[UUID, list[str]]:
+        """The products' barcodes (GTINs), by product id."""
+        async with UnitOfWork(self._sessions) as uow:
+            return await ProductRepository(uow.session).gtins([p.id for p in products])
+
 
 # --------------------------------------------------------------------------- batches
 @dataclass(frozen=True, slots=True)
@@ -130,14 +171,18 @@ class BatchService:
     def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
         self._sessions = sessions
 
-    async def list_page(self, actor: Actor, nafdac_number: str, params: PageParams) -> list[Batch]:
+    async def list_page(
+        self, actor: Actor, nafdac_number: str, params: PageParams
+    ) -> tuple[list[Batch], ProductLabel]:
         async with UnitOfWork(self._sessions) as uow:
             product = await _product(uow.session, nafdac_number)
-            if not policies.can_read_batches(actor, product):
+            authorized = await _authorized(uow.session, product)
+            if not policies.can_read_batches(actor, product, authorized):
                 raise NotFound(PRODUCT_NOT_FOUND)  # do not confirm the product has batches
-            return await BatchRepository(uow.session).list_page(
+            batches = await BatchRepository(uow.session).list_page(
                 params, Batch.product_id == product.id
             )
+            return batches, ProductLabel.of(product)
 
     async def put(
         self,
@@ -146,8 +191,8 @@ class BatchService:
         batch_number: str,
         body: BatchWrite,
         meta: RequestMeta,
-    ) -> tuple[Batch, bool]:
-        """Create or replace one batch; returns it and whether it was created."""
+    ) -> tuple[Batch, bool, ProductLabel]:
+        """Create or replace one batch; returns it, whether it was created, and the product."""
         try:
             number = normalize_batch_number(batch_number)
         except ValueError as exc:
@@ -170,8 +215,9 @@ class BatchService:
                 meta=meta,
                 details={"nafdac_number": product.nafdac_number, "batch_number": number},
             )
+            label = ProductLabel.of(product)
             await uow.commit()
-        return batch, bool(created)
+        return batch, bool(created), label
 
     async def import_csv(
         self, actor: Actor, nafdac_number: str, data: bytes, meta: RequestMeta
@@ -196,8 +242,12 @@ class BatchService:
     @staticmethod
     async def _writable(session: AsyncSession, actor: Actor, nafdac_number: str) -> Product:
         product = await _product(session, nafdac_number)
-        if not policies.can_write_batches(actor, product):
-            raise Forbidden("Only the product's registered manufacturer can declare its batches.")
+        if not policies.can_write_batches(actor, product, await _authorized(session, product)):
+            raise Forbidden(
+                "Only the product's registration holder, or an organisation it authorised, "
+                "can declare its batches."
+            )
+        _warn_without_holder(product, "batch_write")
         return product
 
     @staticmethod
@@ -301,12 +351,17 @@ class ReferenceImageService:
         image: ValidatedImage,
         side: ImageSide,
         meta: RequestMeta,
-    ) -> tuple[ReferenceImage, str]:
+    ) -> tuple[ReferenceImage, ProductLabel]:
         async with UnitOfWork(self._sessions) as uow:
             product = await _product(uow.session, nafdac_number)
-            if not policies.can_upload_reference_images(actor, product):
-                raise Forbidden("Only the product's registered manufacturer can upload references.")
-            product_id, number = product.id, product.nafdac_number
+            authorized = await _authorized(uow.session, product)
+            if not policies.can_upload_reference_images(actor, product, authorized):
+                raise Forbidden(
+                    "Only the product's registration holder, or an organisation it authorised, "
+                    "can upload reference images."
+                )
+            _warn_without_holder(product, "reference_image_upload")
+            product_id, number, label = product.id, product.nafdac_number, ProductLabel.of(product)
         image_id = uuid7()
         key = f"reference-images/{product_id}/{image_id}.jpg"
         # Stored first: a crash before the commit leaves an unreferenced object (swept by the
@@ -338,19 +393,20 @@ class ReferenceImageService:
                 details={"nafdac_number": number, "side": side.value},
             )
             await uow.commit()
-        return reference, number
+        return reference, label
 
     async def list_page(
         self, actor: Actor, nafdac_number: str, params: PageParams
-    ) -> tuple[list[ReferenceImage], str]:
+    ) -> tuple[list[ReferenceImage], ProductLabel]:
         async with UnitOfWork(self._sessions) as uow:
             product = await _product(uow.session, nafdac_number)
-            if not policies.can_read_reference_images(actor, product):
+            authorized = await _authorized(uow.session, product)
+            if not policies.can_read_reference_images(actor, product, authorized):
                 raise NotFound(PRODUCT_NOT_FOUND)
             images = await ReferenceImageRepository(uow.session).list_page(
                 params, ReferenceImage.product_id == product.id
             )
-            return images, product.nafdac_number
+            return images, ProductLabel.of(product)
 
     async def review(
         self,
@@ -359,7 +415,7 @@ class ReferenceImageService:
         status: ReviewStatus,
         note: str | None,
         meta: RequestMeta,
-    ) -> tuple[ReferenceImage, str]:
+    ) -> tuple[ReferenceImage, ProductLabel]:
         if not policies.can_review_products(actor):
             raise Forbidden("Reviewing reference images needs the product:review permission.")
         async with UnitOfWork(self._sessions) as uow:
@@ -381,8 +437,11 @@ class ReferenceImageService:
                 meta=meta,
                 details={"note": note} if note else None,
             )
+            if product is None:
+                raise NotFound(PRODUCT_NOT_FOUND)
+            label = ProductLabel.of(product)
             await uow.commit()
-        return reference, product.nafdac_number if product else ""
+        return reference, label
 
 
 # --------------------------------------------------------------------------- claims
@@ -489,3 +548,107 @@ class ProductClaimService:
             )
             await uow.commit()
             return claim, product.nafdac_number
+
+
+# --------------------------------------------------------------------------- authorisations
+class ProductAuthorizationService:
+    """Organisations a registration holder authorises to declare batches and upload reference
+    images for one product, recorded (and revoked) by a platform admin on the holder's behalf.
+    Audited; revoking keeps the record."""
+
+    def __init__(self, sessions: async_sessionmaker[AsyncSession]) -> None:
+        self._sessions = sessions
+
+    async def grant(
+        self,
+        actor: Actor,
+        nafdac_number: str,
+        organization_id: UUID,
+        note: str | None,
+        meta: RequestMeta,
+    ) -> tuple[ProductAuthorization, ProductLabel]:
+        if not actor.is_platform_admin:
+            raise Forbidden("Only platform admins record authorisations.")
+        async with UnitOfWork(self._sessions) as uow:
+            session = uow.session
+            product = await _product(session, nafdac_number)
+            if product.manufacturer_org_id is None:
+                raise Conflict(
+                    "This product has no linked registration holder: approve the holder's "
+                    "product claim first."
+                )
+            if organization_id == product.manufacturer_org_id:
+                raise Conflict("The registration holder needs no authorisation.")
+            organization = await session.get(Organization, organization_id)
+            if organization is None or organization.status is not OrganizationStatus.ACTIVE:
+                raise NotFound("No verified organisation with this id.")
+            repository = ProductAuthorizationRepository(session)
+            if await repository.active(product.id, organization_id) is not None:
+                raise Conflict("This organisation is already authorised for the product.")
+            authorization = ProductAuthorization(
+                product_id=product.id,
+                organization_id=organization_id,
+                note=note,
+                authorized_by=actor.user_id,
+            )
+            session.add(authorization)
+            await session.flush()
+            await AuditService(session).record(
+                "product.authorization_granted",
+                actor_user_id=actor.user_id,
+                actor_org_id=_org_id(actor),
+                resource_type="product",
+                resource_id=product.id,
+                meta=meta,
+                details={
+                    "nafdac_number": product.nafdac_number,
+                    "organization_id": str(organization_id),
+                    "holder_organization_id": str(product.manufacturer_org_id),
+                },
+            )
+            label = ProductLabel.of(product)
+            await uow.commit()
+        return authorization, label
+
+    async def list_for_product(
+        self, actor: Actor, nafdac_number: str
+    ) -> tuple[list[ProductAuthorization], ProductLabel]:
+        async with UnitOfWork(self._sessions) as uow:
+            product = await _product(uow.session, nafdac_number)
+            if not (actor.is_platform_admin or policies.owns_product(actor, product)):
+                raise Forbidden("Only platform admins and the registration holder can see these.")
+            rows = await ProductAuthorizationRepository(uow.session).for_product(product.id)
+            return rows, ProductLabel.of(product)
+
+    async def revoke(
+        self, actor: Actor, nafdac_number: str, authorization_id: UUID, meta: RequestMeta
+    ) -> tuple[ProductAuthorization, ProductLabel]:
+        if not actor.is_platform_admin:
+            raise Forbidden("Only platform admins revoke authorisations.")
+        async with UnitOfWork(self._sessions) as uow:
+            session = uow.session
+            product = await _product(session, nafdac_number)
+            authorization = await ProductAuthorizationRepository(session).for_update(
+                authorization_id
+            )
+            if authorization is None or authorization.product_id != product.id:
+                raise NotFound("Authorisation not found.")
+            if authorization.revoked_at is not None:
+                raise Conflict("This authorisation was already revoked.")
+            authorization.revoked_at = _now()
+            authorization.revoked_by = actor.user_id
+            await AuditService(session).record(
+                "product.authorization_revoked",
+                actor_user_id=actor.user_id,
+                actor_org_id=_org_id(actor),
+                resource_type="product",
+                resource_id=product.id,
+                meta=meta,
+                details={
+                    "nafdac_number": product.nafdac_number,
+                    "organization_id": str(authorization.organization_id),
+                },
+            )
+            label = ProductLabel.of(product)
+            await uow.commit()
+        return authorization, label

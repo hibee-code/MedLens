@@ -1,5 +1,6 @@
 """The scan flow end to end: submit (API), process (worker, fake readers), read the verdict."""
 
+from datetime import date
 from uuid import UUID, uuid4
 
 import pytest
@@ -9,6 +10,7 @@ from medlens.core.config import QueueSettings
 from medlens.db.models import OutboxEvent
 from medlens.db.session import UnitOfWork
 from medlens.modules.organizations.models import OrganizationType
+from medlens.modules.products.models import Product
 from medlens.modules.rbac.models import RoleName
 from medlens.modules.scans.models import Scan, ScanStatus
 from medlens.modules.scans.router import get_scan_service
@@ -161,9 +163,55 @@ async def test_regulators_see_the_evidence(api: Api) -> None:
     result = response.json()
     assert result["final_verdict"] == "UNREGISTERED"
     assert result["reason_codes"] == ["NOT_IN_REGISTRY"]
-    assert result["analysis"]["scorer_version"] == "weighted-rules-v2"
+    assert result["analysis"]["scorer_version"] == "weighted-rules-v3+barcode"  # the default scorer
     assert result["analysis"]["extracted"]["nafdac_number"]["value"] == "Z9-000001"
     assert result["analysis"]["state"] == "NG-LA"
+
+
+async def test_the_register_check_is_shown_to_regulators_and_the_source_to_everyone(
+    api: Api,
+) -> None:
+    product = await api.create_product()
+    with api.sync_sessions() as session, session.begin():
+        stored = session.get(Product, product.id)
+        assert stored is not None
+        stored.active_ingredients = [
+            {"name": "paracetamol", "strength_value": 500.0, "strength_unit": "mg"}
+        ]
+        stored.dosage_form = "Tablet"
+        stored.retrieved_on = date(2026, 11, 10)
+        stored.source_url = "https://greenbook.nafdac.gov.ng/"
+    headers = device()
+    _, body = await submit(api, headers=headers, data=LAGOS)
+    text = (
+        f"{product.brand_name} NAFDAC REG NO: {product.nafdac_number}\nParacetamol 1000 mg tablets"
+    )
+    api.worker(text=text).process_scan(UUID(str(body["id"])))
+    regulator, organization = await api.user_with_role(RoleName.REGULATOR_ANALYST)
+
+    consumer = (await api.client.get(f"/api/v1/scans/{body['id']}", headers=headers)).json()
+    official = (
+        await api.client.get(
+            f"/api/v1/scans/{body['id']}",
+            headers=api.bearer(api.token(regulator, organization=organization)),
+        )
+    ).json()
+
+    notice = (
+        "Registration data from the NAFDAC Greenbook, retrieved 2026-11-10. "
+        "Verify on greenbook.nafdac.gov.ng."
+    )
+    assert consumer["product"]["register_notice"] == notice
+    assert consumer["product"]["source_url"] == "https://greenbook.nafdac.gov.ng/"
+    assert consumer["product"]["retrieved_on"] == "2026-11-10"
+    assert consumer["analysis"] is None  # no register check for consumers
+    assert "STRENGTH" not in str(consumer["reason_codes"])
+    assert "DETAILS_DO_NOT_MATCH_REGISTER" in consumer["reason_codes"]  # scoring is on
+    check = official["analysis"]["register_check"]
+    assert check["strength"]["outcome"] == "mismatched"
+    assert (check["strength"]["pack"], check["strength"]["register"]) == (["1000 mg"], ["500 mg"])
+    assert check["strength"]["counted"] is (check["strength"]["confidence"] >= 0.85)
+    assert check["dosage_form"]["outcome"] == "matched"
 
 
 async def test_a_bad_photo_is_rejected_with_retake_advice(api: Api) -> None:
@@ -338,3 +386,80 @@ async def test_an_overloaded_queue_refuses_new_scans(api: Api) -> None:
     assert response.status_code == 503
     assert response.headers["retry-after"] == "300"
     assert api.storage.objects == {}  # refused before anything was stored
+
+
+async def test_a_barcode_of_the_same_holders_other_product_is_a_weak_signal(api: Api) -> None:
+    """End to end, the 0.25 path: the pack prints product A's number; its barcode carries the
+    GTIN of product B, registered to the same holder (likely a re-registration). Regulators see
+    the barcode check; the scan stays LIKELY_GENUINE with risk 0.25 and no consumer reason."""
+    from medlens.modules.products.models import GtinSource, ProductGtin
+
+    printed, other = await api.create_product(), await api.create_product()
+    gtin = "0629104150" + f"{uuid4().int % 10000:04d}"
+    body = gtin[:13]
+    total = sum(int(d) * (3 if i % 2 == 0 else 1) for i, d in enumerate(reversed(body)))
+    gtin = body + str((10 - total % 10) % 10)
+    with api.sync_sessions() as session, session.begin():
+        for product in (printed, other):
+            stored = session.get(Product, product.id)
+            assert stored is not None
+            stored.manufacturer_name = "GlaxoSmithKline Consumer Nigeria PLC"
+        session.add(ProductGtin(gtin=gtin, product_id=other.id, source=GtinSource.MANUFACTURER))
+    headers = device()
+    _, submitted = await submit(api, headers=headers, data=LAGOS)
+    api.worker(
+        text=f"{printed.brand_name}\nNAFDAC REG NO: {printed.nafdac_number}",
+        barcode=f"01{gtin}17281231\x1d10LOT-1",
+        ocr_confidence=0.9,
+    ).process_scan(UUID(str(submitted["id"])))
+    regulator, organization = await api.user_with_role(RoleName.REGULATOR_ANALYST)
+
+    consumer = (await api.client.get(f"/api/v1/scans/{submitted['id']}", headers=headers)).json()
+    official = (
+        await api.client.get(
+            f"/api/v1/scans/{submitted['id']}",
+            headers=api.bearer(api.token(regulator, organization=organization)),
+        )
+    ).json()
+
+    barcode = official["analysis"]["register_check"]["barcode"]
+    signals = official["analysis"]["signals"]["signals"]
+    assert barcode["outcome"] == "mismatched"
+    assert barcode["counted"] is True
+    assert barcode["register"] == {
+        "belongs_to": other.nafdac_number,
+        "mapping_source": "manufacturer",
+        "holder": "GlaxoSmithKline Consumer Nigeria PLC",
+        "same_holder": True,
+    }
+    assert signals["barcode_same_holder_mismatch"]["value"] == 1.0
+    assert signals["barcode_same_holder_mismatch"]["weight"] == 0.25
+    assert signals["barcode_product_mismatch"]["value"] == 0.0
+    assert official["analysis"]["risk_score"] == 0.25
+    assert consumer["final_verdict"] == "LIKELY_GENUINE"
+    assert "DETAILS_DO_NOT_MATCH_REGISTER" not in consumer["reason_codes"]
+
+
+async def test_products_sharing_a_generic_name_are_told_apart_by_brand(api: Api) -> None:
+    """The SQL name search with two products of the same generic name: a pack printing only
+    the generic name stays UNREGISTERED; one printing a brand is linked to that brand."""
+    tag = uuid4().hex[:5]
+    kivo = await api.create_product(brand=f"Kivo{tag} Paracetamol Caplets")
+    await api.create_product(brand=f"Zentro{tag} Paracetamol Caplets")
+    number = f"Z8-{uuid4().int % 900000 + 100000}"
+    verdicts = {}
+    for label, printed in (
+        ("generic", "Paracetamol Caplets 500 mg"),
+        ("brand", f"Kivo{tag} Paracetamol Caplets 500 mg"),
+    ):
+        _, body = await submit(api, headers=device(), data=LAGOS)
+        api.worker(text=f"{printed}\nNAFDAC REG NO: {number}\nEXP: 12/2027").process_scan(
+            UUID(str(body["id"]))
+        )
+        verdicts[label] = await stored_scan(api, body["id"])
+
+    assert verdicts["generic"].final_verdict == "UNREGISTERED"
+    assert verdicts["generic"].matched_product_id is None
+    assert verdicts["brand"].final_verdict == "SUSPICIOUS"
+    assert verdicts["brand"].matched_product_id == kivo.id
+    assert verdicts["brand"].reason_codes[0] == "NUMBER_DOES_NOT_MATCH_BRAND"

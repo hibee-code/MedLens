@@ -4,7 +4,10 @@
 1. The question is scrubbed of personal data and searched (``KnowledgeService.search``).
 2. No evidence: ``insufficient_evidence``, without calling a model.
 3. AI off (MEDLENS_LLM__ENABLED, MEDLENS_KNOWLEDGE__ASSISTANT_ENABLED), over budget or the model
-   failing: ``degraded``, with the search results instead of an answer.
+   failing: ``degraded``, with the search results that clear the evidence bar instead of an
+   answer; with none left, ``insufficient_evidence`` (no_relevant_documents). Passages below
+   the bar are dropped (counted in the log); platform admins may ask to see them
+   (include_low_relevance, for debugging).
 4. Otherwise the gateway (balanced tier) answers from the retrieved chunks, which reach the
    model wrapped as untrusted documents, with the question last.
 5. Guardrails: every citation must name a retrieved chunk and quote it exactly; an answer must
@@ -17,7 +20,7 @@ The assistant never sees or changes a scan's verdict.
 
 import hashlib
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
 
@@ -76,7 +79,9 @@ class AssistantReply:
     outcome: Outcome
     answer: str | None = None
     citations: list[CitedSource] = field(default_factory=list)
-    results: list[SearchHit] = field(default_factory=list)  # degraded: what search found
+    results: list[SearchHit] = field(default_factory=list)  # degraded: the evidence found
+    # Passages dropped by the evidence bar, only when a platform admin asked (debugging).
+    low_relevance: list[SearchHit] | None = None
     reason: str | None = None  # why degraded, blocked or without evidence
     vector_search: bool = True
     reranked: bool = False
@@ -110,10 +115,16 @@ class AssistantService:
         self._settings = settings
 
     async def ask(
-        self, actor: Actor, question: str, progress: Progress | None = None
+        self,
+        actor: Actor,
+        question: str,
+        progress: Progress | None = None,
+        *,
+        include_low_relevance: bool = False,
     ) -> AssistantReply:
         """``progress`` hears each stage as it starts (the streaming endpoint): searching,
-        retrieved, generating, checking_citations, retrying."""
+        retrieved, generating, checking_citations, retrying. ``include_low_relevance`` (platform
+        admins only, checked by the caller) adds the passages the evidence bar dropped."""
         emit = progress or _silent
         question = scrub_pii(question)
         await emit("searching", {})
@@ -133,17 +144,37 @@ class AssistantService:
                 vector_search=found.vector_search,
                 reranked=found.reranked,
             )
-        if self._gateway is None or not self._settings.assistant_enabled:
-            return self._degraded(found, "disabled")
         evidence = self._evidence(found)
+        kept = {hit.chunk.chunk_id for hit in evidence}
+        dropped = [hit for hit in found.hits if hit.chunk.chunk_id not in kept]
+        log.info(
+            "assistant.evidence_bar",
+            candidates=len(found.hits),
+            kept=len(evidence),
+            dropped=len(dropped),
+        )
+        reply = await self._reply(actor, question, emit, found, evidence)
+        return replace(reply, low_relevance=dropped) if include_low_relevance else reply
+
+    async def _reply(
+        self,
+        actor: Actor,
+        question: str,
+        emit: Progress,
+        found: SearchResult,
+        evidence: list[SearchHit],
+    ) -> AssistantReply:
         if not evidence:
-            log.info("assistant.weak_evidence", candidates=len(found.hits))
+            ai_off = self._gateway is None or not self._settings.assistant_enabled
             return AssistantReply(
                 Outcome.INSUFFICIENT_EVIDENCE,
-                reason="weak_evidence",
+                # Without AI the reply would be search results, and none is relevant.
+                reason="no_relevant_documents" if ai_off else "weak_evidence",
                 vector_search=found.vector_search,
                 reranked=found.reranked,
             )
+        if self._gateway is None or not self._settings.assistant_enabled:
+            return self._degraded(found, evidence, "disabled")
         hits = {str(hit.chunk.chunk_id): hit for hit in evidence}
         subject = Subject("question", hashlib.sha256(question.encode()).hexdigest()[:32])
         parts = self._parts(evidence, question)
@@ -163,9 +194,9 @@ class AssistantService:
                 )
                 problems = check_grounding(answer, hits)
         except LLMUnavailableError as exc:
-            return self._degraded(found, exc.reason)
+            return self._degraded(found, evidence, exc.reason)
         except LLMCallFailedError as exc:
-            return self._degraded(found, f"model_{exc.reason}")
+            return self._degraded(found, evidence, f"model_{exc.reason}")
         if problems:
             log.info("assistant.ungrounded", problems=len(problems), attempt=2)
             return AssistantReply(
@@ -225,11 +256,13 @@ class AssistantService:
         ]
 
     @staticmethod
-    def _degraded(found: SearchResult, reason: str) -> AssistantReply:
-        log.info("assistant.degraded", reason=reason)
+    def _degraded(found: SearchResult, evidence: list[SearchHit], reason: str) -> AssistantReply:
+        """Search results instead of an answer, limited to the passages that clear the evidence
+        bar: what the model would have been given."""
+        log.info("assistant.degraded", reason=reason, shown=len(evidence), found=len(found.hits))
         return AssistantReply(
             Outcome.DEGRADED,
-            results=found.hits,
+            results=evidence,
             reason=reason,
             vector_search=found.vector_search,
             reranked=found.reranked,

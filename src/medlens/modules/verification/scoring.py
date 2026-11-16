@@ -27,6 +27,18 @@ class SignalName(StrEnum):
     COUNTERFEIT_ALERT = "counterfeit_alert"  # 1: an official alert names this product and batch
     PRODUCT_ALERT = "product_alert"  # 1: an official alert names the product, no batch
     RECALLED_BATCH = "recalled_batch"  # 1: an official recall covers this batch
+    # The register check (register_check.py): 1 mismatched (read with confidence >= 0.85),
+    # 0 matched, unavailable otherwise. Scored with MEDLENS_VERIFICATION__REGISTER_CHECK_SCORING.
+    INGREDIENT_MISMATCH = "ingredient_mismatch"
+    STRENGTH_MISMATCH = "strength_mismatch"
+    DOSAGE_FORM_MISMATCH = "dosage_form_mismatch"
+    HOLDER_MISMATCH = "holder_mismatch"
+    REGISTERED_AFTER_OR_LAPSED_AT_MANUFACTURE = "registered_after_or_lapsed_at_manufacture"
+    # The barcode's GTIN belongs to another registered product than the printed NAFDAC number:
+    # another holder's (a cloned barcode), or the same holder's (likely a re-registration).
+    # Scored with MEDLENS_VERIFICATION__BARCODE_CHECK_SCORING.
+    BARCODE_PRODUCT_MISMATCH = "barcode_product_mismatch"
+    BARCODE_SAME_HOLDER_MISMATCH = "barcode_same_holder_mismatch"
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +65,8 @@ class ScoreInput:
     nafdac_confidence: float | None = None
     # The number read belongs to another product than the one named on the pack.
     number_name_conflict: bool = False
+    # The number read is in no registration, and the pack names a registered brand closely.
+    unregistered_number: bool = False
     registration_status: RegistrationStatus | None = None
     pack_expired: bool = False
     signals: dict[SignalName, Signal] = field(default_factory=dict)
@@ -90,10 +104,32 @@ WEIGHTS: dict[SignalName, float] = {
     SignalName.PRODUCT_ALERT: 0.35,
     SignalName.RECALLED_BATCH: 0.30,
 }
+# Weights of the register-check signals (owner-approved 2026-11-13, CLAUDE.md decision log):
+# used only when the scorer is built with register_check=True.
+REGISTER_WEIGHTS: dict[SignalName, float] = {
+    SignalName.INGREDIENT_MISMATCH: 0.60,  # strong: another active ingredient is printed
+    SignalName.STRENGTH_MISMATCH: 0.50,  # strong: another strength is printed
+    SignalName.DOSAGE_FORM_MISMATCH: 0.25,  # medium
+    SignalName.HOLDER_MISMATCH: 0.10,  # weak: packs may name a manufacturer or distributor
+    SignalName.REGISTERED_AFTER_OR_LAPSED_AT_MANUFACTURE: 0.25,  # medium
+}
+# Cloned barcodes (owner-approved 2026-11-13): a weighted signal, not a hard rule. Another
+# holder's GTIN is strong (alone it makes a pack high priority, which opens a case); the same
+# holder's is likely a re-registration and stays below the suspicious threshold alone.
+BARCODE_WEIGHTS: dict[SignalName, float] = {
+    SignalName.BARCODE_PRODUCT_MISMATCH: 0.60,
+    SignalName.BARCODE_SAME_HOLDER_MISMATCH: 0.25,
+}
+ALL_WEIGHTS: dict[SignalName, float] = WEIGHTS | REGISTER_WEIGHTS | BARCODE_WEIGHTS
+# Signals reported to consumers only as the coarse DETAILS_DO_NOT_MATCH_REGISTER: the field is
+# for regulators (analysis.register_check), so the verdict does not teach which field to fix.
+# A likely re-registration (same holder) is not reported to consumers at all.
+_COARSE = frozenset(
+    {SignalName.NAME_MISMATCH, *REGISTER_WEIGHTS, SignalName.BARCODE_PRODUCT_MISMATCH}
+)
 # A signal is reported as a reason once its value reaches this level.
 REASON_LEVEL = 0.5
 _SIGNAL_REASONS: dict[SignalName, ReasonCode] = {
-    SignalName.NAME_MISMATCH: ReasonCode.NAME_MISMATCH,
     SignalName.BATCH_NOT_DECLARED: ReasonCode.BATCH_NOT_DECLARED,
     SignalName.EXPIRY_MISMATCH: ReasonCode.EXPIRY_MISMATCH,
     SignalName.BATCH_SPREAD: ReasonCode.BATCH_SEEN_WIDELY,
@@ -109,7 +145,9 @@ _REGISTRATION_REASONS = {
 
 
 class WeightedRuleScorer:
-    version = "weighted-rules-v2"  # v2: official alerts and recalls
+    """v2: official alerts and recalls. v3: v2 plus the register-check signals (only when
+    built with ``register_check=True``). "+barcode": the cloned-barcode signals (only with
+    ``barcode_check=True``). A name mismatch is reported as DETAILS_DO_NOT_MATCH_REGISTER."""
 
     def __init__(
         self,
@@ -117,12 +155,23 @@ class WeightedRuleScorer:
         suspicious_threshold: float = 0.3,
         high_priority_threshold: float = 0.6,
         min_field_confidence: float = 0.6,
+        register_check: bool = False,
+        barcode_check: bool = False,
     ) -> None:
         if not 0 < suspicious_threshold < high_priority_threshold <= 1:
             raise ValueError("thresholds must satisfy 0 < suspicious < high priority <= 1")
         self._suspicious = suspicious_threshold
         self._high = high_priority_threshold
         self._min_confidence = min_field_confidence
+        self.register_check = register_check
+        self.barcode_check = barcode_check
+        self._weights = (
+            WEIGHTS
+            | (REGISTER_WEIGHTS if register_check else {})
+            | (BARCODE_WEIGHTS if barcode_check else {})
+        )
+        version = "weighted-rules-v3" if register_check else "weighted-rules-v2"
+        self.version = f"{version}+barcode" if barcode_check else version
 
     def score(self, facts: ScoreInput) -> Score:
         if facts.quality_reasons:
@@ -136,6 +185,10 @@ class WeightedRuleScorer:
         floor = 0.0
         if facts.number_name_conflict:
             reasons.append(ReasonCode.NAFDAC_NUMBER_MISMATCH)
+            floor = self._high
+        if facts.unregistered_number:
+            # Regulators see this code; consumers DETAILS_DO_NOT_MATCH_REGISTER (codes.py).
+            reasons.append(ReasonCode.NUMBER_DOES_NOT_MATCH_BRAND)
             floor = self._high
         if facts.registration_status is RegistrationStatus.REVOKED:
             floor = max(floor, self._high)
@@ -154,14 +207,18 @@ class WeightedRuleScorer:
             floor = max(floor, self._suspicious)
 
         weighted = sum(
-            WEIGHTS[name] * (signal.value or 0.0)
+            self._weights[name] * (signal.value or 0.0)
             for name, signal in signals.items()
-            if signal.available
+            if signal.available and name in self._weights
         )
         for name, reason in _SIGNAL_REASONS.items():
             signal = signals.get(name, UNAVAILABLE)
             if signal.value is not None and signal.value >= REASON_LEVEL:
                 reasons.append(reason)
+        # One coarse reason for any register mismatch (the name included): the field stays for
+        # regulators to see.
+        if any(_on(signals, name) for name in _COARSE if name in self._weights):
+            reasons.append(ReasonCode.DETAILS_DO_NOT_MATCH_REGISTER)
         # An alert for the product (not this batch) alone raises risk; with any other negative
         # finding it makes the pack high priority, which opens a case.
         others = [code for code in reasons if code is not ReasonCode.ALERT_FOR_THIS_PRODUCT]
@@ -198,8 +255,13 @@ class WeightedRuleScorer:
     def _confidence(self, facts: ScoreInput) -> float:
         """Extraction confidence, discounted when signals were unavailable:
         confidence = extraction * (0.4 + 0.6 * coverage), coverage = available weight / total."""
-        total = sum(WEIGHTS.values())
-        available = sum(WEIGHTS[name] for name, signal in facts.signals.items() if signal.available)
+        weights = self._weights
+        total = sum(weights.values())
+        available = sum(
+            weights[name]
+            for name, signal in facts.signals.items()
+            if signal.available and name in weights
+        )
         coverage = available / total
         return max(0.0, min(1.0, facts.extraction_confidence * (0.4 + 0.6 * coverage)))
 

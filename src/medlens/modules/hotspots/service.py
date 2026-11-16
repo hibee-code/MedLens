@@ -76,6 +76,7 @@ def _cluster_json(cluster: Cluster) -> dict[str, Any]:
         "severity": severity(cluster.scan_count).value,
         "states": cluster.states,
         "top_products": cluster.top_products,
+        "top_unregistered_numbers": cluster.top_unregistered_numbers,
         "first_seen": cluster.first_seen.isoformat(),
         "last_seen": cluster.last_seen.isoformat(),
     }

@@ -5,6 +5,7 @@ workers only, never the API's event loop."""
 import io
 from collections import defaultdict
 from statistics import fmean
+from typing import Literal
 
 import cv2
 import imagehash
@@ -68,33 +69,62 @@ def tesseract_available() -> bool:
     return True
 
 
+# Tesseract passes read in turn, by OCR mode (MEDLENS_VERIFICATION__OCR_MODE): the page
+# segmentation mode (--psm) and whether the image is inverted first.
+OcrMode = Literal["sparse_block", "sparse_inverted"]
+PASSES: dict[str, tuple[tuple[int, bool], ...]] = {
+    # Sparse text, then one uniform block: reads brand names printed light on a dark band.
+    "sparse_block": ((11, False), (6, False)),
+    # The previous mode (until 2026-11-16): sparse text on the image and on its inverse.
+    "sparse_inverted": ((11, False), (11, True)),
+}
+
+
 class TesseractOcr:
     """Printed text, one line per printed line (the field extractors match within lines);
-    confidence is the mean word confidence. Sparse-text mode suits packs, whose text is
-    scattered rather than set in paragraphs. Packs often print names light on dark, which
-    Tesseract misses, so the inverted image is read too and new lines are added."""
+    confidence is the mean word confidence, overall and per line. Two passes over the greyscale
+    image, new lines added: sparse-text mode (--psm 11) suits packs, whose text is scattered,
+    but skips brand names printed light on a dark band; block mode (--psm 6) reads those. On
+    the 20 eval packs block mode added the brand name on 18; the inverted-image pass it
+    replaces added only noise, at the same cost (about 0.5 s per pass). ``mode`` "sparse_inverted"
+    keeps the previous passes (sparse text on the image and on its inverse).
+    CLAUDE.md decision log, "Brand names read by OCR, and unregistered numbers on registered
+    brands"."""
 
-    def __init__(self, *, languages: str = "eng", timeout_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        languages: str = "eng",
+        timeout_seconds: float = 10.0,
+        mode: OcrMode = "sparse_block",
+    ) -> None:
         self._languages = languages
         self._timeout = timeout_seconds
+        self._passes = PASSES[mode]
 
     def read(self, image: bytes) -> OcrResult:
         grey = _decode(image).convert("L")
-        lines: dict[str, None] = {}
-        confidences: list[float] = []
-        for picture in (grey, ImageOps.invert(grey)):
-            for line, line_confidences in self._lines(picture):
-                if line not in lines:
-                    lines[line] = None
-                    confidences.extend(line_confidences)
-        text = "\n".join(lines)
-        return OcrResult(text, round(fmean(confidences) / 100, 3) if confidences else 0.0)
+        lines: dict[str, list[float]] = {}
+        for mode, inverted in self._passes:
+            picture = ImageOps.invert(grey) if inverted else grey
+            for line, word_confidences in self._lines(picture, mode):
+                lines.setdefault(line, word_confidences)
+        confidences = [value for words in lines.values() for value in words]
+        return OcrResult(
+            "\n".join(lines),
+            round(fmean(confidences) / 100, 3) if confidences else 0.0,
+            tuple((line, round(fmean(words) / 100, 3)) for line, words in lines.items()),
+            tuple(
+                (line, tuple(round(value / 100, 3) for value in words))
+                for line, words in lines.items()
+            ),
+        )
 
-    def _lines(self, picture: Image.Image) -> list[tuple[str, list[float]]]:
+    def _lines(self, picture: Image.Image, mode: int) -> list[tuple[str, list[float]]]:
         data = pytesseract.image_to_data(
             picture,
             lang=self._languages,
-            config="--psm 11",
+            config=f"--psm {mode}",
             output_type=pytesseract.Output.DICT,
             timeout=self._timeout,
         )

@@ -88,7 +88,7 @@ def build_readers(settings: Settings) -> tuple[ImageAnalysisPort, BarcodePort, O
         tesseract_available,
     )
 
-    ocr = TesseractOcr() if tesseract_available() else None
+    ocr = TesseractOcr(mode=settings.verification.ocr_mode) if tesseract_available() else None
     if ocr is None:
         log.warning("ocr.unavailable", reason="tesseract is not installed")
     return OpenCvImageAnalysis(), ZxingBarcode(), ocr

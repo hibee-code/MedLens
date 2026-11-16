@@ -4404,7 +4404,7 @@
           "products"
         ],
         "summary": "Declare or update a batch",
-        "description": "Creates the batch (201) or replaces its details (200). Only the product's registered manufacturer (an approved product claim) can declare its batches.",
+        "description": "Creates the batch (201) or replaces its details (200). Only the product's registration holder (linked by an approved product claim) or an organisation it authorised (recorded by a platform admin) can declare its batches.",
         "operationId": "products-put_batch",
         "security": [
           {
@@ -4870,7 +4870,7 @@
           "products"
         ],
         "summary": "Upload a reference image of the genuine pack",
-        "description": "Multipart upload (`image`, `side`) by the product's registered manufacturer. The image is validated and re-encoded like scan photos. It is used for visual matching only after a reviewer approves it.",
+        "description": "Multipart upload (`image`, `side`) by the product's registration holder or an organisation it authorised. The image is validated and re-encoded like scan photos. It is used for visual matching only after a reviewer approves it.",
         "operationId": "products-upload_reference_image",
         "security": [
           {
@@ -5047,6 +5047,442 @@
                 },
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products/{nafdac_number}/authorizations": {
+      "post": {
+        "tags": [
+          "products"
+        ],
+        "summary": "Authorise another organisation for a product",
+        "description": "A platform admin records that the registration holder authorises an organisation (a contract manufacturer, an importer) to declare batches and upload reference images for this product; the holder's evidence goes in `note`. The product must have a linked holder (an approved product claim). Audited.",
+        "operationId": "products-grant_authorization",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "nafdac_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "description": "NAFDAC number, e.g. 04-0005 (case and separators are free).",
+              "title": "Nafdac Number"
+            },
+            "description": "NAFDAC number, e.g. 04-0005 (case and separators are free)."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AuthorizationCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "products"
+        ],
+        "summary": "List a product's authorised organisations",
+        "description": "Current and revoked authorisations, newest first. For platform admins and the registration holder.",
+        "operationId": "products-list_authorizations",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "nafdac_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "description": "NAFDAC number, e.g. 04-0005 (case and separators are free).",
+              "title": "Nafdac Number"
+            },
+            "description": "NAFDAC number, e.g. 04-0005 (case and separators are free)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AuthorizationRead"
+                  },
+                  "title": "Response Products-List Authorizations"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/products/{nafdac_number}/authorizations/{authorization_id}/revoke": {
+      "post": {
+        "tags": [
+          "products"
+        ],
+        "summary": "Revoke an authorisation",
+        "description": "The organisation can no longer declare batches or upload reference images for the product; what it declared stays. Platform admins only; audited.",
+        "operationId": "products-revoke_authorization",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "nafdac_number",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "maxLength": 32,
+              "description": "NAFDAC number, e.g. 04-0005 (case and separators are free).",
+              "title": "Nafdac Number"
+            },
+            "description": "NAFDAC number, e.g. 04-0005 (case and separators are free)."
+          },
+          {
+            "name": "authorization_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Authorization Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthorizationRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
                 }
               }
             }
@@ -8714,7 +9150,7 @@
           "assistant"
         ],
         "summary": "Ask the assistant",
-        "description": "Answers from the knowledge base only, citing the documents it used (each quote is checked against the document). Without relevant documents the answer is `insufficient_evidence` and no model is called; with AI switched off or over budget it is `degraded` and returns the search results. For pharmacists, manufacturers, regulators and platform admins. The assistant does not give dosage or diagnostic advice and never judges whether a pack is genuine: scan the pack for that.",
+        "description": "Answers from the knowledge base only, citing the documents it used (each quote is checked against the document). Without relevant documents the answer is `insufficient_evidence` and no model is called; with AI switched off or over budget it is `degraded` and returns the search results. For pharmacists, manufacturers, regulators and platform admins. The assistant does not give dosage or diagnostic advice and never judges whether a pack is genuine: scan the pack for that. Passages below the evidence bar are never shown; with AI off and none above it, the answer is `insufficient_evidence` (no_relevant_documents). Platform admins may send `include_low_relevance` to see the dropped passages (403 for anyone else).",
         "operationId": "assistant-ask",
         "requestBody": {
           "content": {
@@ -10067,7 +10503,7 @@
             },
             "type": "array",
             "title": "Results",
-            "description": "Search results instead of an answer, when degraded."
+            "description": "Search results instead of an answer, when degraded: only passages that clear the evidence bar (reranker score at least MEDLENS_KNOWLEDGE__MIN_RERANK_SCORE, or naming the asked NAFDAC number), as the model would have been given."
           },
           "reason": {
             "anyOf": [
@@ -10079,7 +10515,22 @@
               }
             ],
             "title": "Reason",
-            "description": "Why there is no answer, a stable code: no_matching_documents, weak_evidence (no passage relevant enough), model_found_no_answer, citations_not_grounded; when degraded, why AI is unavailable; when blocked, the claims."
+            "description": "Why there is no answer, a stable code: no_matching_documents, weak_evidence (no passage relevant enough), no_relevant_documents (AI unavailable and no passage relevant enough to show), model_found_no_answer, citations_not_grounded; when degraded, why AI is unavailable; when blocked, the claims."
+          },
+          "low_relevance_results": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SearchResultItem"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Low Relevance Results",
+            "description": "Only when a platform admin sent include_low_relevance: the passages below the evidence bar, dropped from `results` and never given to the model."
           },
           "vector_search": {
             "type": "boolean",
@@ -10462,6 +10913,116 @@
           }
         ]
       },
+      "AuthorizationCreate": {
+        "properties": {
+          "organization_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Organization Id",
+            "description": "A verified organisation (not the holder)."
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 1000,
+                "description": "Free text. Any HTML is stripped; the result is plain text.",
+                "examples": [
+                  "Seal was broken and the print looked faded."
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note",
+            "description": "The holder's authorisation, as evidence."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "organization_id"
+        ],
+        "title": "AuthorizationCreate",
+        "examples": [
+          {
+            "note": "Holder's letter of 2026-11-01 appointing the contract manufacturer.",
+            "organization_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e55"
+          }
+        ]
+      },
+      "AuthorizationRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "nafdac_number": {
+            "type": "string",
+            "title": "Nafdac Number"
+          },
+          "organization_id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Organization Id"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note"
+          },
+          "active": {
+            "type": "boolean",
+            "title": "Active"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "nafdac_number",
+          "organization_id",
+          "note",
+          "active",
+          "created_at",
+          "revoked_at"
+        ],
+        "title": "AuthorizationRead",
+        "examples": [
+          {
+            "active": true,
+            "created_at": "2026-11-12T09:00:00Z",
+            "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e60",
+            "nafdac_number": "04-0005",
+            "note": "Holder's letter of 2026-11-01 appointing the contract manufacturer.",
+            "organization_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e55"
+          }
+        ]
+      },
       "BatchImportResult": {
         "properties": {
           "rows": {
@@ -10537,6 +11098,12 @@
             "type": "string",
             "format": "date-time",
             "title": "Created At"
+          },
+          "registration_inactive": {
+            "type": "boolean",
+            "title": "Registration Inactive",
+            "description": "The registration is suspended or revoked: its batches and reference images are kept, but flagged.",
+            "default": false
           }
         },
         "type": "object",
@@ -12110,6 +12677,14 @@
             "title": "Top Products",
             "description": "Most flagged matched products."
           },
+          "top_unregistered_numbers": {
+            "items": {
+              "$ref": "#/components/schemas/UnregisteredNumber"
+            },
+            "type": "array",
+            "title": "Top Unregistered Numbers",
+            "description": "Most frequent NAFDAC numbers on the cluster's UNREGISTERED scans (read from the pack, else typed), which match no product and so are not in `top_products`."
+          },
           "first_seen": {
             "type": "string",
             "format": "date-time",
@@ -12260,6 +12835,12 @@
                     "product_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e11",
                     "scan_count": 7
                   }
+                ],
+                "top_unregistered_numbers": [
+                  {
+                    "nafdac_number": "A4-9917",
+                    "scan_count": 5
+                  }
                 ]
               }
             ],
@@ -12283,6 +12864,45 @@
           "leaflet"
         ],
         "title": "ImageSide"
+      },
+      "IngredientRead": {
+        "properties": {
+          "name": {
+            "type": "string",
+            "title": "Name",
+            "description": "Normalised active ingredient (salt and spelling removed)."
+          },
+          "strength_value": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strength Value"
+          },
+          "strength_unit": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Strength Unit",
+            "description": "mg, IU, %, \"mg/5 mL\", \"mg/dose\"..."
+          }
+        },
+        "type": "object",
+        "required": [
+          "name",
+          "strength_value",
+          "strength_unit"
+        ],
+        "title": "IngredientRead"
       },
       "InvitationAccept": {
         "properties": {
@@ -12825,6 +13445,8 @@
                 "iso_week": "2026-W44",
                 "nafdac_number": "04-0289",
                 "product_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e11",
+                "registration_inactive": false,
+                "registration_status": "active",
                 "state": "NG-KN"
               }
             ],
@@ -14061,6 +14683,23 @@
           "registration_status": {
             "$ref": "#/components/schemas/RegistrationStatus"
           },
+          "registration_inactive": {
+            "type": "boolean",
+            "title": "Registration Inactive",
+            "description": "The registration is suspended or revoked: its batches and reference images are kept, but flagged."
+          },
+          "registration_date": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Registration Date"
+          },
           "registration_expires_on": {
             "anyOf": [
               {
@@ -14072,6 +14711,47 @@
               }
             ],
             "title": "Registration Expires On"
+          },
+          "active_ingredients": {
+            "items": {
+              "$ref": "#/components/schemas/IngredientRead"
+            },
+            "type": "array",
+            "title": "Active Ingredients",
+            "description": "Parsed from the register's ingredient and strength text."
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url",
+            "description": "The NAFDAC Greenbook page the entry was read from."
+          },
+          "retrieved_on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieved On",
+            "description": "When the register entry was read."
+          },
+          "gtins": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Gtins",
+            "description": "The product's barcodes (GS1 GTINs, 14 digits), as its holder declared them."
           },
           "manufacturer_onboarded": {
             "type": "boolean",
@@ -14101,12 +14781,29 @@
           "pack_size",
           "manufacturer_name",
           "registration_status",
+          "registration_inactive",
+          "registration_date",
           "registration_expires_on",
+          "active_ingredients",
+          "source_url",
+          "retrieved_on",
           "manufacturer_onboarded"
         ],
         "title": "ProductRead",
         "examples": [
           {
+            "active_ingredients": [
+              {
+                "name": "paracetamol",
+                "strength_unit": "mg",
+                "strength_value": 500.0
+              },
+              {
+                "name": "caffeine",
+                "strength_unit": "mg",
+                "strength_value": 65.0
+              }
+            ],
             "brand_name": "Panadol Extra Caplet",
             "dosage_form": "Tablet",
             "generic_name": "Paracetamol, Caffeine",
@@ -14114,8 +14811,12 @@
             "manufacturer_onboarded": true,
             "nafdac_number": "04-0005",
             "pack_size": "1 x 10",
+            "registration_date": "2024-01-31",
             "registration_expires_on": "2029-01-31",
+            "registration_inactive": false,
             "registration_status": "active",
+            "retrieved_on": "2026-11-03",
+            "source_url": "https://greenbook.nafdac.gov.ng/",
             "strength": "500 mg/65 mg"
           }
         ]
@@ -14133,6 +14834,37 @@
           "generic_name": {
             "type": "string",
             "title": "Generic Name"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url",
+            "description": "The NAFDAC Greenbook page the registration was read from."
+          },
+          "retrieved_on": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retrieved On",
+            "description": "When the entry was read."
+          },
+          "register_notice": {
+            "type": "string",
+            "title": "Register Notice",
+            "description": "Registration data from the NAFDAC Greenbook, retrieved <date>. Verify on greenbook.nafdac.gov.ng. (MedLens holds a local copy of the register, not a live link.)",
+            "default": ""
           }
         },
         "type": "object",
@@ -14176,6 +14908,14 @@
           "flagged_scans": {
             "type": "integer",
             "title": "Flagged Scans"
+          },
+          "registration_status": {
+            "$ref": "#/components/schemas/RegistrationStatus"
+          },
+          "registration_inactive": {
+            "type": "boolean",
+            "title": "Registration Inactive",
+            "description": "The registration is suspended or revoked: the product is flagged."
           }
         },
         "type": "object",
@@ -14185,7 +14925,9 @@
           "brand_name",
           "state",
           "iso_week",
-          "flagged_scans"
+          "flagged_scans",
+          "registration_status",
+          "registration_inactive"
         ],
         "title": "ProductWeekCell"
       },
@@ -14200,6 +14942,12 @@
             "examples": [
               "Seal was broken and the print looked faded."
             ]
+          },
+          "include_low_relevance": {
+            "type": "boolean",
+            "title": "Include Low Relevance",
+            "description": "Platform admins only (403 otherwise), for debugging: also return the passages the evidence bar dropped, in `low_relevance_results`.",
+            "default": false
           }
         },
         "additionalProperties": false,
@@ -14328,6 +15076,12 @@
               }
             ],
             "title": "Reviewed At"
+          },
+          "registration_inactive": {
+            "type": "boolean",
+            "title": "Registration Inactive",
+            "description": "The registration is suspended or revoked: its batches and reference images are kept, but flagged.",
+            "default": false
           }
         },
         "type": "object",
@@ -14669,6 +15423,19 @@
             "type": "boolean",
             "title": "Llm Used",
             "description": "The vision LLM helped read the pack."
+          },
+          "register_check": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Register Check",
+            "description": "The pack against its registration, field by field (product_name, active_ingredients, strength, dosage_form, holder, registration_window): outcome matched, mismatched, unread or not_in_register, with the pack's and the register's values. Regulators and platform admins only; consumers see the coarse reason DETAILS_DO_NOT_MATCH_REGISTER."
           },
           "pipeline_verdict": {
             "anyOf": [
@@ -15299,6 +16066,25 @@
             "token_type": "Bearer"
           }
         ]
+      },
+      "UnregisteredNumber": {
+        "properties": {
+          "nafdac_number": {
+            "type": "string",
+            "title": "Nafdac Number",
+            "description": "As read from the pack, or typed by the person."
+          },
+          "scan_count": {
+            "type": "integer",
+            "title": "Scan Count"
+          }
+        },
+        "type": "object",
+        "required": [
+          "nafdac_number",
+          "scan_count"
+        ],
+        "title": "UnregisteredNumber"
       },
       "UsageDay": {
         "properties": {

@@ -66,6 +66,13 @@ ROWS: list[tuple[str, list[tuple[str, str, str, str]]]] = [
                 "s",
             ),
             panel("Queue depth", "max by (queue) (medlens_queue_depth)", "{{queue}}"),
+            # Mismatches a 0.85 confidence guard (or the barcode guards) kept out of the score:
+            # the cost of the provisional thresholds, until the real-photo OCR benchmark.
+            panel(
+                "Signals held back by a guard (1h)",
+                "sum by (signal) (increase(medlens_scan_signals_held_back_total[1h]))",
+                "{{signal}}",
+            ),
         ],
     ),
     (
@@ -145,7 +152,7 @@ def dashboard() -> dict[str, object]:
                     "title": name,
                     "datasource": DATASOURCE,
                     "fieldConfig": {"defaults": {"unit": unit}, "overrides": []},
-                    "gridPos": {"h": 8, "w": 6, "x": 6 * index, "y": y},
+                    "gridPos": {"h": 8, "w": 6, "x": 6 * (index % 4), "y": y + 8 * (index // 4)},
                     "targets": [
                         {
                             "datasource": DATASOURCE,
@@ -156,7 +163,7 @@ def dashboard() -> dict[str, object]:
                     ],
                 }
             )
-        y += 8
+        y += 8 * -(-len(row) // 4)  # four panels per line
     return {
         "uid": "medlens-overview",
         "title": "MedLens overview",

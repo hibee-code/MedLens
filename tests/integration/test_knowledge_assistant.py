@@ -320,6 +320,29 @@ async def test_with_ai_off_the_assistant_returns_search_results(api: Api) -> Non
     assert provider.requests == []
 
 
+async def test_only_platform_admins_may_see_dropped_passages(api: Api) -> None:
+    from tests.integration.test_products_api import mfa
+
+    user, organization = await regulator(api)
+    headers = api.bearer(api.token(user, organization=organization))
+    _, number, _ = await indexed_alert(api, headers)
+    admin = mfa(api, await api.create_user(global_role=RoleName.PLATFORM_ADMIN))
+    api.use_llm(enabled=False)
+    debugging = {"question": f"Alert for {number}?", "include_low_relevance": True}
+
+    refused = await api.client.post("/api/v1/assistant/ask", json=debugging, headers=headers)
+    allowed = await api.client.post("/api/v1/assistant/ask", json=debugging, headers=admin)
+    normal = await api.client.post(
+        "/api/v1/assistant/ask", json={"question": f"Alert for {number}?"}, headers=admin
+    )
+
+    assert refused.status_code == 403
+    assert "platform admins" in refused.json()["detail"]
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["low_relevance_results"] == []  # nothing below the bar here
+    assert normal.json()["low_relevance_results"] is None
+
+
 async def test_consumers_cannot_ask(api: Api) -> None:
     consumer = api.bearer(api.token(await api.create_user()))
 

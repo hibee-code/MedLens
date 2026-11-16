@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any
 from uuid import UUID
 
@@ -53,6 +53,26 @@ class ProductSummary(ReadModel):
     nafdac_number: str
     brand_name: str
     generic_name: str
+    source_url: str | None = Field(
+        default=None, description="The NAFDAC Greenbook page the registration was read from."
+    )
+    retrieved_on: date | None = Field(default=None, description="When the entry was read.")
+    register_notice: str = Field(
+        default="",
+        description=(
+            "Registration data from the NAFDAC Greenbook, retrieved <date>. Verify on "
+            "greenbook.nafdac.gov.ng. (MedLens holds a local copy of the register, not a live "
+            "link.)"
+        ),
+    )
+
+
+def register_notice(retrieved_on: date | None) -> str:
+    when = retrieved_on.isoformat() if retrieved_on else "on an unknown date"
+    return (
+        f"Registration data from the NAFDAC Greenbook, retrieved {when}. "
+        "Verify on greenbook.nafdac.gov.ng."
+    )
 
 
 class ScanAnalysis(ReadModel):
@@ -68,6 +88,16 @@ class ScanAnalysis(ReadModel):
     processing_ms: int | None
     error_code: str | None
     llm_used: bool = Field(description="The vision LLM helped read the pack.")
+    register_check: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "The pack against its registration, field by field (product_name, "
+            "active_ingredients, strength, dosage_form, holder, registration_window): outcome "
+            "matched, mismatched, unread or not_in_register, with the pack's and the register's "
+            "values. Regulators and platform admins only; consumers see the coarse reason "
+            "DETAILS_DO_NOT_MATCH_REGISTER."
+        ),
+    )
     pipeline_verdict: Verdict | None = Field(
         description="The scorer's verdict; never changes, even when a case decision overrides."
     )

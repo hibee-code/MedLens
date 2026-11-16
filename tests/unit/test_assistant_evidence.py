@@ -5,6 +5,7 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from structlog.testing import capture_logs
 
 from medlens.core.config import KnowledgeSettings
 from medlens.modules.knowledge.models import DocumentKind
@@ -88,3 +89,52 @@ def test_without_reranking_the_search_floor_is_the_only_bar(vector_search: bool)
     found = SearchResult(hits, vector_search=vector_search, reranked=False)
 
     assert evidence(found) == hits
+
+
+async def test_degraded_results_are_only_the_evidence() -> None:
+    """With AI switched off, the search results shown are the passages the model would have
+    been given: those under the evidence bar are dropped."""
+    strong, weak, named = hit(0.96), hit(0.0005), hit(0.001, ("nafdac_number",))
+    found = SearchResult([weak, strong, named], vector_search=True, reranked=True)
+
+    reply = await assistant(found, assistant_enabled=False).ask(None, "Alert for 04-0289?")  # type: ignore[arg-type]
+
+    assert reply.outcome is Outcome.DEGRADED
+    assert reply.reason == "disabled"
+    assert reply.results == [strong, named]
+
+
+async def test_with_ai_off_and_nothing_relevant_no_documents_are_found() -> None:
+    found = SearchResult([hit(0.01), hit(0.002)], vector_search=True, reranked=True)
+
+    reply = await assistant(found, assistant_enabled=False).ask(None, "Price of Coartem?")  # type: ignore[arg-type]
+
+    assert reply.outcome is Outcome.INSUFFICIENT_EVIDENCE
+    assert reply.reason == "no_relevant_documents"
+    assert reply.results == []
+    assert reply.low_relevance is None  # not asked for
+
+
+async def test_dropped_passages_are_counted_and_returned_only_when_asked() -> None:
+    strong, weak = hit(0.96), hit(0.0005)
+    found = SearchResult([weak, strong], vector_search=True, reranked=True)
+    service = assistant(found, assistant_enabled=False)
+
+    with capture_logs() as logs:
+        debugging = await service.ask(None, "Alert?", include_low_relevance=True)  # type: ignore[arg-type]
+    normal = await service.ask(None, "Alert?")  # type: ignore[arg-type]
+
+    assert debugging.results == [strong]
+    assert debugging.low_relevance == [weak]
+    assert normal.low_relevance is None
+    bar = next(log for log in logs if log["event"] == "assistant.evidence_bar")
+    assert (bar["candidates"], bar["kept"], bar["dropped"]) == (2, 1, 1)
+
+
+async def test_without_reranking_degraded_results_are_all_the_hits() -> None:
+    hits = [hit(None), hit(None)]
+    found = SearchResult(hits, vector_search=False, reranked=False)
+
+    reply = await assistant(found, assistant_enabled=False).ask(None, "Alert?")  # type: ignore[arg-type]
+
+    assert reply.results == hits

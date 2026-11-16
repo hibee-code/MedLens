@@ -1,5 +1,6 @@
 from datetime import date, datetime
 from enum import StrEnum
+from typing import Any
 from uuid import UUID
 
 from pgvector.sqlalchemy import Vector
@@ -14,6 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     text,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from medlens.db.base import Entity, SoftDelete
@@ -25,6 +27,27 @@ class RegistrationStatus(StrEnum):
     EXPIRED = "expired"
     SUSPENDED = "suspended"
     REVOKED = "revoked"
+
+
+# Registrations whose batches and reference images are kept but flagged in listings and reports.
+INACTIVE_REGISTRATIONS = frozenset({RegistrationStatus.SUSPENDED, RegistrationStatus.REVOKED})
+
+
+class RegisterSource(StrEnum):
+    """Where a product's register entry came from: a checksum-verified Greenbook snapshot (and
+    the committed sample of one), or the hand-typed register file. A snapshot import updates
+    snapshot rows only; a hand-typed row is never overwritten or removed by a snapshot."""
+
+    SNAPSHOT = "snapshot"
+    MANUAL = "manual"
+
+
+class GtinSource(StrEnum):
+    """Where a GTIN-to-product mapping came from: the register (an official listing) or the
+    registration holder's own declaration. Shown to regulators with the cloned-barcode check."""
+
+    REGISTER = "register"
+    MANUFACTURER = "manufacturer"
 
 
 class ReviewStatus(StrEnum):
@@ -43,7 +66,15 @@ class ImageSide(StrEnum):
 
 
 class Product(Entity):
-    """A registered product, standing in for its NAFDAC Greenbook entry."""
+    """A registered product: a local copy of its NAFDAC Greenbook entry.
+
+    Register fields: brand_name (product name); active_ingredients (normalised list of
+    {name, strength_value, strength_unit}, products/register.py) with the register's own text in
+    generic_name and strength; dosage_form; nafdac_number (registration number, unique);
+    manufacturer_name (registration holder as named in the register) and manufacturer_org_id
+    (the holder's organisation, linked only by an approved product claim); registration_date;
+    registration_expires_on; registration_status; source_url and retrieved_on (where and when
+    the entry was read)."""
 
     __tablename__ = "products"
     __table_args__ = (
@@ -67,6 +98,14 @@ class Product(Entity):
             postgresql_ops={"nafdac_number": "gin_trgm_ops"},
         ),
         Index("ix_products_manufacturer_org_id", "manufacturer_org_id"),
+        CheckConstraint(
+            "jsonb_typeof(active_ingredients) = 'array'", name="active_ingredients_is_list"
+        ),
+        CheckConstraint(
+            "registration_date IS NULL OR registration_expires_on IS NULL "
+            "OR registration_date <= registration_expires_on",
+            name="registration_dates_in_order",
+        ),
     )
 
     nafdac_number: Mapped[str] = mapped_column(String(32), unique=True)
@@ -85,6 +124,32 @@ class Product(Entity):
         str_enum(RegistrationStatus, "registration_status")
     )
     registration_expires_on: Mapped[date | None]
+    # Parsed from generic_name and strength on import (products/register.py).
+    active_ingredients: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb")
+    )
+    registration_date: Mapped[date | None]
+    source_url: Mapped[str | None] = mapped_column(Text)
+    retrieved_on: Mapped[date | None]
+    register_source: Mapped[RegisterSource] = mapped_column(
+        str_enum(RegisterSource, "register_source"), server_default=RegisterSource.SNAPSHOT.value
+    )
+
+
+class ProductGtin(Entity):
+    """A barcode (GS1 GTIN, 14 digits) of a registered product, with where the mapping came from.
+    A GTIN belongs to one product: the cloned-barcode check (verification/register_check.py)."""
+
+    __tablename__ = "product_gtins"
+    __table_args__ = (
+        UniqueConstraint("gtin"),
+        Index("ix_product_gtins_product_id", "product_id"),
+        CheckConstraint("gtin ~ '^[0-9]{14}$'", name="gtin_is_14_digits"),
+    )
+
+    gtin: Mapped[str] = mapped_column(String(14))
+    product_id: Mapped[UUID] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    source: Mapped[GtinSource] = mapped_column(str_enum(GtinSource, "gtin_source"))
 
 
 class Batch(Entity):
@@ -180,3 +245,30 @@ class ProductClaim(Entity):
     reviewed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     reviewed_at: Mapped[datetime | None]
     review_note: Mapped[str | None] = mapped_column(Text)
+
+
+class ProductAuthorization(Entity):
+    """An organisation the registration holder authorises to declare batches and upload
+    reference images for one product (a contract manufacturer, an importer), recorded by a
+    platform admin. Revoking keeps the row (revoked_at)."""
+
+    __tablename__ = "product_authorizations"
+    __table_args__ = (
+        Index(
+            "uq_product_authorizations_active",
+            "product_id",
+            "organization_id",
+            unique=True,
+            postgresql_where=text("revoked_at IS NULL"),
+        ),
+        Index("ix_product_authorizations_organization_id", "organization_id"),
+    )
+
+    product_id: Mapped[UUID] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    organization_id: Mapped[UUID] = mapped_column(
+        ForeignKey("organizations.id", ondelete="CASCADE")
+    )
+    note: Mapped[str | None] = mapped_column(Text)  # the holder's authorisation, as evidence
+    authorized_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    revoked_at: Mapped[datetime | None]
+    revoked_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))

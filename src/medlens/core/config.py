@@ -444,8 +444,24 @@ class VerificationSettings(_Group):
     # Stages still pending after this long are skipped (degrading confidence, not failing).
     pipeline_timeout_seconds: float = Field(default=20.0, gt=0, le=300)
     # Registered products looked up by NAFDAC number are cached in Redis for this long. Their
-    # facts change only through the Greenbook import, which waits this long to show. 0: off.
+    # facts change only through register imports, which clear the cache. 0: off.
     product_cache_seconds: int = Field(default=60, ge=0, le=3600)
+    # Read the register fields printed on the pack (ingredients, strengths, dosage form,
+    # companies) for the register check: OCR then runs even when the barcode identified the
+    # pack. The vision LLM is never called for them alone.
+    read_register_fields: bool = True
+    # Tesseract passes (adapters/vision.py): sparse_block reads sparse text, then the page as one
+    # block (brand names light on dark); sparse_inverted is the previous mode, sparse text on
+    # the image and its inverse.
+    ocr_mode: Literal["sparse_block", "sparse_inverted"] = "sparse_block"
+    # Score the register check's mismatches (ingredients, strength, dosage form, holder,
+    # manufacture within the registration; read with confidence >= 0.85): scorer
+    # weighted-rules-v3, weights owner-approved 2026-11-13. The check is recorded either way.
+    register_check_scoring: bool = True
+    # Score a cloned barcode: the pack's GTIN (decoded from its barcode) belongs to another
+    # registered product than its NAFDAC number (read with confidence >= 0.85). Owner-approved
+    # 2026-11-13; recorded either way.
+    barcode_check_scoring: bool = True
     # real: OpenCV quality gate, zxing barcodes, Tesseract when installed (the `vision` group);
     # fake: no readers (tests).
     readers: Literal["real", "fake"] = "real"

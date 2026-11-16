@@ -17,7 +17,7 @@ from medlens.modules.products.models import Product
 from medlens.modules.rbac.models import RoleName
 from medlens.modules.scans.models import Scan, ScanStatus, Verdict
 from medlens.modules.users.models import User
-from tests.integration.api_support import Api
+from tests.integration.api_support import Api, photo
 from tests.integration.test_cases import open_case, unregistered_scan
 
 pytestmark = pytest.mark.integration
@@ -52,12 +52,14 @@ def flagged_scans(
     product: Product | None = None,
     verdict: Verdict = Verdict.SUSPICIOUS,
     llm_used: bool = False,
+    read_numbers: list[str] | None = None,
 ) -> list[UUID]:
     """Completed scans written straight to the database at the given (coarse) locations."""
     ids = []
     with api.sync_sessions() as session, session.begin():
-        for latitude, longitude in points:
+        for index, (latitude, longitude) in enumerate(points):
             scan_id = uuid7()
+            number = read_numbers[index % len(read_numbers)] if read_numbers else None
             session.add(
                 Scan(
                     id=scan_id,
@@ -72,6 +74,11 @@ def flagged_scans(
                     matched_product_id=product.id if product else None,
                     llm_used=llm_used,
                     scorer_version="weighted-rules-v2",
+                    extracted=(
+                        {"nafdac_number": {"value": number, "source": "ocr", "confidence": 0.9}}
+                        if number
+                        else None
+                    ),
                 )
             )
             ids.append(scan_id)
@@ -354,6 +361,26 @@ async def test_a_verdict_override_invalidates_cached_hotspots(api: Api) -> None:
     assert after["generated_at"] != first["generated_at"]  # recomputed
 
 
+async def test_clusters_of_unregistered_packs_name_the_numbers_read(api: Api) -> None:
+    """Unregistered packs match no product, so top_products is empty: the cluster names the
+    NAFDAC numbers printed on them instead, most frequent first."""
+    damaturu = [(11.74, 11.96), (11.75, 11.96), (11.74, 11.97), (11.75, 11.97), (11.73, 11.96)]
+    flagged_scans(
+        api, damaturu, NigerianState.YOBE, verdict=Verdict.UNREGISTERED,
+        read_numbers=["Z9-404404", "Z9-404404", "Z9-404404", "Z9-505505"],
+    )  # fmt: skip
+    admin = await api.create_user(global_role=RoleName.PLATFORM_ADMIN)
+
+    response = await api.client.get("/api/v1/hotspots?state=NG-YO&days=1", headers=auth(api, admin))
+
+    [cluster] = response.json()["clusters"]
+    assert cluster["top_products"] == []
+    assert cluster["top_unregistered_numbers"] == [
+        {"nafdac_number": "Z9-404404", "scan_count": 4},  # lines 1-3 and 5 (wraps around)
+        {"nafdac_number": "Z9-505505", "scan_count": 1},
+    ]
+
+
 async def test_regulators_only_see_hotspots_in_their_jurisdiction(api: Api) -> None:
     flagged_scans(api, MAIDUGURI, NigerianState.BORNO)
     user, organization = await regulator(api, ["NG-AD"])
@@ -443,6 +470,7 @@ async def test_manufacturers_see_only_aggregates_of_their_own_products(api: Api)
     body = report.json()
     assert report.status_code == 200, report.text
     [cell] = body["cells"]
+    assert (cell["registration_status"], cell["registration_inactive"]) == ("active", False)
     assert cell["product_id"] == str(own.id)
     assert (cell["state"], cell["flagged_scans"]) == ("NG-BO", 6)
     assert body["suppressed_cells"] == 1
@@ -452,3 +480,82 @@ async def test_manufacturers_see_only_aggregates_of_their_own_products(api: Api)
     assert as_regulator.status_code == 403  # regulators hold no reports:read_own
     assert admin_without_org.status_code == 422
     assert admin_with_org.json()["cells"] == body["cells"]
+
+
+# Only this test uses Benue.
+MAKURDI = [(7.73, 8.52), (7.74, 8.52), (7.73, 8.53), (7.74, 8.53), (7.72, 8.52)]
+
+
+async def test_a_registered_brand_with_an_unregistered_number_is_linked_to_the_brand(
+    api: Api,
+) -> None:
+    """End to end: the printed number is in no registration, the brand is a registered
+    product's (strict match): SUSPICIOUS, linked to that product, so it shows in hotspots and
+    in its manufacturer's report. Regulators see NUMBER_DOES_NOT_MATCH_BRAND, consumers the
+    coarse code. A pack with an unrelated name stays UNREGISTERED."""
+    manufacturer = await api.create_org(OrganizationType.MANUFACTURER)
+    staff = await api.create_user()
+    await api.add_member(staff, manufacturer, RoleName.MANUFACTURER_STAFF)
+    brand = f"Zentrovax{uuid4().hex[:5]} Forte"
+    product = await api.create_product(brand=brand, manufacturer=manufacturer)
+    pack = f"{brand}\nNAFDAC REG NO: Z8-{uuid4().int % 900000 + 100000}\nEXP: 12/2027"
+    worker = api.worker(text=pack)
+    scans = []
+    for latitude, longitude in MAKURDI:
+        headers = {"X-Device-Id": str(uuid4())}
+        submitted = await api.client.post(
+            "/api/v1/scans",
+            files={"image": ("pack.jpg", photo(), "image/jpeg")},
+            data={"latitude": str(latitude), "longitude": str(longitude), "state": "NG-BE"},
+            headers=headers,
+        )
+        worker.process_scan(UUID(submitted.json()["id"]))
+        scans.append((submitted.json()["id"], headers))
+    unrelated_headers = {"X-Device-Id": str(uuid4())}
+    unrelated = await api.client.post(
+        "/api/v1/scans",
+        files={"image": ("pack.jpg", photo(), "image/jpeg")},
+        data={"latitude": "7.73", "longitude": "8.52", "state": "NG-BE"},
+        headers=unrelated_headers,
+    )
+    api.worker(text="Malarex Plus\nNAFDAC REG NO: Z8-999991\nEXP: 12/2027").process_scan(
+        UUID(unrelated.json()["id"])
+    )
+    analyst, regulator_org = await regulator(api, ["NG-BE"])
+    scan_id, consumer = scans[0]
+
+    as_consumer = (await api.client.get(f"/api/v1/scans/{scan_id}", headers=consumer)).json()
+    as_regulator = (
+        await api.client.get(f"/api/v1/scans/{scan_id}", headers=auth(api, analyst, regulator_org))
+    ).json()
+    other = (
+        await api.client.get(f"/api/v1/scans/{unrelated.json()['id']}", headers=unrelated_headers)
+    ).json()
+    hotspots = await api.client.get(
+        "/api/v1/hotspots?state=NG-BE&days=1", headers=auth(api, analyst, regulator_org)
+    )
+    report = await api.client.get(
+        "/api/v1/manufacturer/scans", headers=auth(api, staff, manufacturer)
+    )
+    with api.sync_sessions() as session:
+        linked = set(
+            session.scalars(
+                select(Scan.matched_product_id).where(Scan.id.in_([UUID(i) for i, _ in scans]))
+            )
+        )
+
+    assert linked == {product.id}
+    assert as_consumer["final_verdict"] == "SUSPICIOUS"
+    assert as_consumer["reason_codes"][0] == "DETAILS_DO_NOT_MATCH_REGISTER"
+    assert "NUMBER_DOES_NOT_MATCH_BRAND" not in as_consumer["reason_codes"]
+    assert as_regulator["reason_codes"][0] == "NUMBER_DOES_NOT_MATCH_BRAND"
+    assert as_regulator["analysis"]["signals"]["match"]["unregistered_number"] is True
+    assert other["final_verdict"] == "UNREGISTERED"
+    [cluster] = hotspots.json()["clusters"]
+    assert product.nafdac_number in {item["nafdac_number"] for item in cluster["top_products"]}
+    [cell] = report.json()["cells"]
+    assert (cell["product_id"], cell["state"], cell["flagged_scans"]) == (
+        str(product.id),
+        "NG-BE",
+        5,
+    )

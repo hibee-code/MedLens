@@ -1,0 +1,72 @@
+{
+  "coartem_dispersible": {
+    "active_ingredients": ["artemether", "lumefantrine"],
+    "strengths": [{"strength_value": 20.0, "strength_unit": "mg"}, {"strength_value": 120.0, "strength_unit": "mg"}],
+    "dosage_form": "tablet",
+    "companies": ["novartis pharmaceutical ag", "novartis nigeria"]
+  },
+  "emzor_syrup": {
+    "active_ingredients": ["paracetamol"],
+    "strengths": [{"strength_value": 125.0, "strength_unit": "mg/5 mL"}],
+    "dosage_form": "oral liquid",
+    "companies": ["emzor pharmaceutical industry"]
+  },
+  "panadol_extra": {
+    "active_ingredients": ["paracetamol", "caffeine"],
+    "strengths": [{"strength_value": 500.0, "strength_unit": "mg"}, {"strength_value": 65.0, "strength_unit": "mg"}],
+    "dosage_form": "tablet",
+    "companies": null
+  },
+  "augmentin": {
+    "active_ingredients": ["amoxicillin", "clavulanic acid"],
+    "strengths": [{"strength_value": 500.0, "strength_unit": "mg"}, {"strength_value": 125.0, "strength_unit": "mg"}],
+    "dosage_form": "tablet",
+    "companies": ["smithkline beecham"]
+  },
+  "cotrimoxazole": {
+    "active_ingredients": ["sulfamethoxazole", "trimethoprim"],
+    "strengths": [{"strength_value": 480.0, "strength_unit": "mg"}],
+    "dosage_form": "tablet",
+    "companies": null
+  },
+  "ceftriaxone_injection": {
+    "active_ingredients": ["ceftriaxone"],
+    "strengths": [{"strength_value": 1000.0, "strength_unit": "mg"}],
+    "dosage_form": "injection",
+    "companies": null
+  },
+  "ketoconazole_cream": {
+    "active_ingredients": ["ketoconazole"],
+    "strengths": [{"strength_value": 2.0, "strength_unit": "%"}],
+    "dosage_form": "cream",
+    "companies": null
+  },
+  "ambiguous_form": {
+    "active_ingredients": ["ibuprofen"],
+    "strengths": [{"strength_value": 400.0, "strength_unit": "mg"}],
+    "dosage_form": null,
+    "companies": null
+  },
+  "unreadable_garbled": {
+    "active_ingredients": null, "strengths": null, "dosage_form": null, "companies": null
+  },
+  "brand_only": {
+    "active_ingredients": null, "strengths": null, "dosage_form": null, "companies": null
+  },
+  "unknown_ingredient": {
+    "active_ingredients": null, "strengths": null, "dosage_form": "capsule", "companies": null
+  },
+  "acetaminophen_synonym": {
+    "active_ingredients": ["paracetamol"],
+    "strengths": [{"strength_value": 500.0, "strength_unit": "mg"}],
+    "dosage_form": "tablet",
+    "companies": ["mcneil consumer healthcare"]
+  },
+  "registered_name_only": {
+    "extra_names": ["arterolane"],
+    "active_ingredients": ["arterolane", "piperaquine"],
+    "strengths": [{"strength_value": 150.0, "strength_unit": "mg"}, {"strength_value": 750.0, "strength_unit": "mg"}],
+    "dosage_form": "tablet",
+    "companies": null
+  }
+}

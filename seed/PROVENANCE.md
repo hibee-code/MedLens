@@ -5,7 +5,7 @@
 | File | `seed/products.csv` | `greenbook-2026-11-03.csv.gz` (not in Git) |
 | Contents | 50 products | 8,680 products (all categories) |
 | Integrity | reviewed in Git | SHA-256 in `seed/greenbook-snapshot.json`, checked on every import |
-| Used by | `make seed`, tests | `make greenbook-import` (every environment) |
+| Used by | `make seed`, tests | `make greenbook-import-snapshot` (every environment) |
 
 ## Source
 
@@ -58,7 +58,7 @@ registered drug whose name matches most closely (`SAMPLE_BRANDS`).
 uv run python -m medlens.seed.greenbook export        # data/greenbook/greenbook-<date>.csv.gz
 # upload the file to private object storage, then set "location" in seed/greenbook-snapshot.json
 uv run python -m medlens.seed.greenbook sample --snapshot data/greenbook/greenbook-<date>.csv.gz
-make greenbook-import                                 # in each environment
+make greenbook-import-snapshot                       # in each environment: report, then CONFIRM=1
 ```
 
 Commit the manifest, the sample and an updated date in this file together.

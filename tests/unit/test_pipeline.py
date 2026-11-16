@@ -22,11 +22,13 @@ from medlens.adapters.llm import GatewayPackReader
 from medlens.ai.gateway.gateway import LLMGateway
 from medlens.core.config import LLMSettings
 from medlens.modules.products.models import RegistrationStatus
+from medlens.modules.products.register import parse_ingredients
 from medlens.modules.scans.models import Verdict
 from medlens.modules.verification.catalog import (
     AlertFacts,
     BatchFacts,
     BatchSpread,
+    GtinOwner,
     ProductFacts,
 )
 from medlens.modules.verification.codes import AdviceCode, ReasonCode
@@ -36,7 +38,7 @@ from medlens.modules.verification.pipeline import (
     ScanInput,
     VerificationPipeline,
 )
-from medlens.modules.verification.scoring import SignalName, WeightedRuleScorer
+from medlens.modules.verification.scoring import WEIGHTS, SignalName, WeightedRuleScorer
 from medlens.ports.barcode import BarcodeRead
 from medlens.ports.image_analysis import ImageAssessment
 from medlens.ports.ocr import OcrResult
@@ -61,6 +63,10 @@ class DictCatalog:
     spread: BatchSpread = SEEN_IN_LAGOS
     references: dict[UUID, float] = field(default_factory=lambda: {PANADOL.id: 0.93})
     alerts: dict[tuple[str, str], AlertFacts] = field(default_factory=dict)
+    gtins: dict[str, GtinOwner] = field(default_factory=dict)
+
+    def gtin_owner(self, gtin: str) -> GtinOwner | None:
+        return self.gtins.get(gtin)
 
     def published_alerts(self, nafdac_number: str, batch_number: str | None) -> list[AlertFacts]:
         keys = {(nafdac_number, ""), (nafdac_number, batch_number or "")}
@@ -117,12 +123,13 @@ def run(
     *,
     llm_enabled: bool = True,
     ocr: FakeOcr | None = None,
+    register_check_scoring: bool = False,
 ) -> tuple[object, FakeLLM]:
     key = image_key(pack.image)
     llm = FakeLLM({key: pack.llm_output} if pack.llm_output else {})
     pipeline = VerificationPipeline(
         catalog=catalog or DictCatalog(),
-        scorer=WeightedRuleScorer(),
+        scorer=WeightedRuleScorer(register_check=register_check_scoring),
         analyzer=FakeImageAnalysis({key: pack.assessment} if pack.assessment else {}),
         barcode=FakeBarcode(
             {key: [BarcodeRead("DataMatrix", pack.barcode)]} if pack.barcode else {}
@@ -130,7 +137,9 @@ def run(
         ocr=ocr or FakeOcr({key: OcrResult(pack.text, pack.ocr_confidence)}),
         llm=llm,
         embedder=FakeEmbedder(),
-        config=PipelineConfig(llm_enabled=llm_enabled),
+        config=PipelineConfig(
+            llm_enabled=llm_enabled, register_check_scoring=register_check_scoring
+        ),
     )
     scan = ScanInput(uuid4(), pack.image, NOW, claimed_nafdac_number=pack.claimed, state=pack.state)
     return pipeline.run(scan), llm
@@ -161,9 +170,11 @@ def test_a_genuine_pack_is_likely_genuine() -> None:
         "ocr": "ok",
         "llm": "skipped",
         "match": "ok",
+        "pack_details": "ok",
         "batch": "ok",
         "alerts": "ok",
         "visual": "ok",
+        "barcode_owner": "ok",
         "score": "ok",
     }
 
@@ -243,6 +254,39 @@ def test_invalid_llm_output_is_discarded() -> None:
     assert result.score.verdict is Verdict.INCONCLUSIVE
 
 
+def test_register_fields_are_read_without_calling_the_llm() -> None:
+    """Identity fields complete: the vision LLM is not called, whatever the register fields."""
+    pack = Pack(text="Panadol Extra NAFDAC REG NO: A4-1234 BATCH NO: B2309-14 EXP: 12/2027")
+
+    result, llm = run(pack)
+
+    assert llm.calls == []
+    assert stage_outcomes(result)["llm"] == "skipped"
+    assert stage_outcomes(result)["pack_details"] == "ok"
+    assert result.extraction.active_ingredients is None  # nothing printed: unread
+
+
+def test_the_llm_may_return_register_fields_with_the_identity_fields() -> None:
+    output = FakeLLM.reading(
+        nafdac_number="A4-1234",
+        product_name="Panadol Extra",
+        batch_number="B2309-14",
+        expiry_date="12/2027",
+        active_ingredients="Paracetamol; Caffeine",
+        strength="500 mg; 65 mg",
+        dosage_form="Caplets",
+    )
+    pack = Pack(barcode=None, text="illegible", llm_output=output)
+
+    result = outcome(pack)
+
+    assert result.extraction.active_ingredients.value == ("paracetamol", "caffeine")
+    assert result.extraction.active_ingredients.source is FieldSource.LLM
+    assert result.extraction.dosage_form.value == "tablet"
+    assert [s.value for s in result.extraction.strengths.value] == [500, 65]
+    assert result.extraction.as_json()["strengths"]["confidence"] == 0.8  # capped
+
+
 def test_valid_llm_output_fills_the_gaps_with_capped_confidence() -> None:
     output = FakeLLM.reading(
         confidence=0.99,
@@ -296,14 +340,113 @@ def test_a_number_from_another_product_is_suspicious() -> None:
     assert ReasonCode.NAFDAC_NUMBER_MISMATCH in result.score.reason_codes
 
 
-def test_a_registered_name_with_an_unknown_number_is_suspicious() -> None:
+def test_a_registered_brand_with_an_unregistered_number_is_suspicious() -> None:
+    """The printed number is in no registration, the brand is Panadol Extra's: the scan is
+    linked to Panadol Extra (hotspots, the manufacturer report) and opens a case."""
     pack = Pack(barcode=None, text="Panadol Extra NAFDAC NO: A7-7777 EXP 12/2027")
 
     result = outcome(pack, DictCatalog(products=[PANADOL]))
 
     assert result.match.method == "name"
+    assert result.match.product == PANADOL
+    assert result.match.unregistered_number is True
     assert result.score.verdict is Verdict.SUSPICIOUS
-    assert ReasonCode.NAFDAC_NUMBER_MISMATCH in result.score.reason_codes
+    assert result.score.high_priority is True
+    assert result.score.reason_codes[0] is ReasonCode.NUMBER_DOES_NOT_MATCH_BRAND
+    assert ReasonCode.NAFDAC_NUMBER_MISMATCH not in result.score.reason_codes
+    assert result.signals_json()["match"]["unregistered_number"] is True
+
+
+@dataclass
+class ScoredNames(DictCatalog):
+    """A catalog whose brand match has a fixed score."""
+
+    named_score: float = 0.0
+
+    def products_named_in(self, text: str) -> list[tuple[ProductFacts, float]]:
+        return [(PANADOL, self.named_score)] if self.named_score else []
+
+
+@pytest.mark.parametrize(
+    ("score", "verdict"),
+    [
+        (0.95, Verdict.SUSPICIOUS),
+        (0.9, Verdict.SUSPICIOUS),  # the strict threshold itself
+        (0.89, Verdict.UNREGISTERED),  # a name match, but not strict enough to accuse
+        (0.8, Verdict.UNREGISTERED),
+    ],
+)
+def test_an_unregistered_number_is_set_against_a_brand_only_on_a_strict_match(
+    score: float, verdict: Verdict
+) -> None:
+    pack = Pack(barcode=None, text="Panadol Extra NAFDAC NO: A7-7777 EXP 12/2027")
+
+    result = outcome(pack, ScoredNames(products=[PANADOL], named_score=score))
+
+    assert result.score.verdict is verdict
+    assert (result.match is not None) is (verdict is Verdict.SUSPICIOUS)
+
+
+EMZOR_PCM = ProductFacts(
+    uuid4(), "04-0290", "Emzor Paracetamol Caplets", "Paracetamol", RegistrationStatus.ACTIVE
+)
+DAWA_PCM = ProductFacts(
+    uuid4(), "04-0291", "Dawa Paracetamol Caplets", "Paracetamol", RegistrationStatus.ACTIVE
+)
+GENERIC_ONLY = ProductFacts(
+    uuid4(), "04-0292", "Paracetamol Caplets BP", "Paracetamol", RegistrationStatus.ACTIVE
+)
+
+
+@pytest.mark.parametrize(
+    ("printed", "named", "linked"),
+    [
+        # The pack shows only the generic name both products share: no brand, no accusation,
+        # even when the name search scores it highly.
+        ("Paracetamol Caplets 500 mg", EMZOR_PCM, None),
+        ("Paracetamol Caplets 500 mg", GENERIC_ONLY, None),  # a brand with no word of its own
+        ("Dawa Paracetamol Caplets 500 mg", DAWA_PCM, DAWA_PCM),
+    ],
+)
+def test_the_brand_rule_rests_on_brand_words_never_on_the_generic_name(
+    printed: str, named: ProductFacts, linked: ProductFacts | None
+) -> None:
+    @dataclass
+    class Named(DictCatalog):
+        def products_named_in(self, text: str) -> list[tuple[ProductFacts, float]]:
+            return [(named, 0.95)]  # as if the search matched on the shared words
+
+    pack = Pack(barcode=None, text=f"{printed} NAFDAC NO: A7-7777 EXP 12/2027")
+
+    result = outcome(pack, Named(products=[EMZOR_PCM, DAWA_PCM, GENERIC_ONLY]))
+
+    if linked is None:
+        assert result.score.verdict is Verdict.UNREGISTERED
+        assert result.match is None
+    else:
+        assert result.score.verdict is Verdict.SUSPICIOUS
+        assert result.match.product == linked
+        assert ReasonCode.NUMBER_DOES_NOT_MATCH_BRAND in result.score.reason_codes
+
+
+def test_an_unregistered_number_on_an_unrelated_name_stays_unregistered() -> None:
+    pack = Pack(barcode=None, text="Malarex Plus NAFDAC NO: B4-9930 EXP 12/2027")
+
+    result = outcome(pack)
+
+    assert result.score.verdict is Verdict.UNREGISTERED
+    assert result.score.reason_codes == (ReasonCode.NOT_IN_REGISTRY,)
+    assert result.match is None
+
+
+def test_a_brand_alone_identifies_a_pack_without_a_legible_number() -> None:
+    pack = Pack(barcode=None, text="Panadol Extra EXP 12/2027")
+
+    result = outcome(pack, ScoredNames(products=[PANADOL], named_score=0.85))
+
+    assert result.match.method == "name"
+    assert result.match.unregistered_number is False
+    assert ReasonCode.NUMBER_DOES_NOT_MATCH_BRAND not in result.score.reason_codes
 
 
 def test_ocr_errors_in_the_number_are_absorbed() -> None:
@@ -341,7 +484,8 @@ def test_a_visual_mismatch_is_suspicious() -> None:
 def test_the_signal_vector_is_stored_in_full() -> None:
     data = outcome(Pack()).signals_json()
 
-    assert set(data["signals"]) == {name.value for name in SignalName}
+    assert set(data["signals"]) == {name.value for name in WEIGHTS}  # register ones: when on
+    assert data["register_check"]["product_name"]["outcome"] == "matched"
     assert data["signals"]["counterfeit_alert"] == {"value": 0.0, "weight": 0.6}
     assert data["signals"]["visual_mismatch"]["value"] == 0.0
     assert data["match"]["method"] == "nafdac_number"
@@ -514,3 +658,140 @@ def test_a_name_that_was_not_read_is_no_evidence() -> None:
     assert not unread.signals[SignalName.NAME_MISMATCH].available
     assert unread.score.verdict is Verdict.LIKELY_GENUINE
     assert misspelt.signals[SignalName.NAME_MISMATCH].value == 0.5
+
+
+PANADOL_REGISTERED = replace(
+    PANADOL,
+    active_ingredients=tuple(parse_ingredients("Paracetamol; Caffeine", "500 mg; 65 mg")),
+    dosage_form="Caplet",
+    holder_name="GlaxoSmithKline Consumer Nigeria PLC",
+)
+WRONG_STRENGTH = (
+    "Panadol Extra NAFDAC REG NO: A4-1234 BATCH NO: B2309-14 EXP: 12/2027\n"
+    "Paracetamol 1000 mg, Caffeine 65 mg\n24 caplets"
+)
+
+
+@pytest.mark.parametrize("scoring", [False, True])
+def test_the_register_check_is_recorded_and_scored_only_when_switched_on(scoring: bool) -> None:
+    catalog = DictCatalog(products=[PANADOL_REGISTERED, COARTEM])
+
+    result, llm = run(Pack(text=WRONG_STRENGTH), catalog, register_check_scoring=scoring)
+
+    check = result.signals_json()["register_check"]
+    assert check["strength"] == {
+        "outcome": "mismatched",
+        "pack": ["1000 mg", "65 mg"],
+        "register": ["500 mg", "65 mg"],
+        "confidence": 0.9,
+        "counted": True,
+    }
+    assert check["active_ingredients"]["outcome"] == "matched"
+    assert check["dosage_form"]["outcome"] == "matched"
+    assert check["holder"]["outcome"] == "unread"  # no company label on the pack
+    assert llm.calls == []  # never called for register fields
+    if scoring:
+        assert result.score.verdict is Verdict.SUSPICIOUS
+        assert ReasonCode.DETAILS_DO_NOT_MATCH_REGISTER in result.score.reason_codes
+        assert result.signals_json()["signals"]["strength_mismatch"]["weight"] == 0.5
+    else:
+        assert result.score.verdict is Verdict.LIKELY_GENUINE
+        assert "strength_mismatch" not in result.signals_json()["signals"]
+
+
+GSK = "GlaxoSmithKline Consumer Nigeria PLC"
+PANADOL_GSK = replace(PANADOL, holder_name=GSK)
+COARTEM_NOVARTIS = replace(COARTEM, holder_name="Novartis Nigeria Limited")
+ZINNAT_GSK = ProductFacts(
+    uuid4(), "04-0433", "Zinnat 250 mg", "Cefuroxime", RegistrationStatus.ACTIVE, holder_name=GSK
+)
+
+
+def barcode_run(
+    owner: ProductFacts, *, scoring: bool, ocr_confidence: float = 0.9, source: str = "register"
+):  # type: ignore[no-untyped-def]
+    """The printed NAFDAC number is Panadol's (GSK); the barcode's GTIN belongs to ``owner``."""
+    catalog = DictCatalog(products=[PANADOL_GSK, COARTEM], gtins={GTIN: GtinOwner(owner, source)})
+    key = image_key(b"photo")
+    pipeline = VerificationPipeline(
+        catalog=catalog,
+        scorer=WeightedRuleScorer(barcode_check=scoring),
+        analyzer=FakeImageAnalysis({}),
+        barcode=FakeBarcode({key: [BarcodeRead("DataMatrix", Pack().barcode or "")]}),
+        ocr=FakeOcr({key: OcrResult(Pack().text, ocr_confidence)}),
+        embedder=FakeEmbedder(),
+        config=PipelineConfig(barcode_check_scoring=scoring),
+    )
+    return pipeline.run(ScanInput(uuid4(), b"photo", NOW, state="NG-LA"))
+
+
+@pytest.mark.parametrize("scoring", [False, True])
+def test_a_cloned_barcode_is_recorded_and_scored_only_when_switched_on(scoring: bool) -> None:
+    result = barcode_run(COARTEM_NOVARTIS, scoring=scoring, source="manufacturer")
+
+    check = result.signals_json()["register_check"]["barcode"]
+    assert check == {
+        "outcome": "mismatched",
+        "pack": GTIN,
+        "register": {
+            "belongs_to": COARTEM.nafdac_number,
+            "mapping_source": "manufacturer",  # shown to regulators
+            "holder": "Novartis Nigeria Limited",
+            "same_holder": False,
+        },
+        "confidence": 0.98,
+        "counted": True,
+    }
+    if scoring:
+        assert result.score.high_priority
+        assert result.score.risk_score == 0.6
+        assert result.score.scorer_version == "weighted-rules-v2+barcode"
+        assert ReasonCode.DETAILS_DO_NOT_MATCH_REGISTER in result.score.reason_codes
+    else:
+        assert result.score.verdict is Verdict.LIKELY_GENUINE
+        assert result.score.scorer_version == "weighted-rules-v2"
+
+
+def test_the_same_holders_barcode_is_a_weak_signal() -> None:
+    """Likely a re-registration: 0.25, below the suspicious threshold alone, and no consumer
+    reason."""
+    result = barcode_run(ZINNAT_GSK, scoring=True)
+
+    check = result.signals_json()["register_check"]["barcode"]
+    signals = result.signals_json()["signals"]
+    assert check["register"]["same_holder"] is True
+    assert signals["barcode_same_holder_mismatch"]["value"] == 1.0
+    assert signals["barcode_product_mismatch"]["value"] == 0.0
+    assert result.score.risk_score == 0.25
+    assert result.score.verdict is Verdict.LIKELY_GENUINE
+    assert ReasonCode.DETAILS_DO_NOT_MATCH_REGISTER not in result.score.reason_codes
+
+
+def test_a_cloned_barcode_with_an_unsure_nafdac_number_is_not_counted() -> None:
+    from prometheus_client import REGISTRY
+
+    from medlens.modules.verification.metrics import record_scan
+
+    labels = {"signal": "barcode_product_mismatch", "reason": "nafdac_number_not_read_confidently"}
+    before = REGISTRY.get_sample_value("medlens_scan_signals_held_back_total", labels) or 0.0
+    result = barcode_run(COARTEM_NOVARTIS, scoring=True, ocr_confidence=0.84)
+    record_scan(result.score.verdict.value, "completed", 0.1, result)
+
+    after = REGISTRY.get_sample_value("medlens_scan_signals_held_back_total", labels)
+    assert after == before + 1  # the guard's hold-backs are counted, per signal
+
+    check = result.signals_json()["register_check"]["barcode"]
+    assert check["counted"] is False
+    assert check["not_counted_because"] == "nafdac_number_not_read_confidently"
+    assert result.score.verdict is Verdict.LIKELY_GENUINE
+    assert result.signals[SignalName.BARCODE_PRODUCT_MISMATCH].value is None  # unavailable
+
+
+def test_a_barcode_of_the_same_product_or_an_unknown_one_is_no_evidence() -> None:
+    same, _ = run(Pack(), DictCatalog(gtins={GTIN: GtinOwner(PANADOL, "register")}))
+    unknown, _ = run(Pack(), DictCatalog())
+    none, _ = run(Pack(barcode=None))
+
+    assert same.signals_json()["register_check"]["barcode"]["outcome"] == "matched"
+    assert unknown.signals_json()["register_check"]["barcode"]["outcome"] == "not_in_register"
+    assert none.signals_json()["register_check"]["barcode"]["outcome"] == "unread"

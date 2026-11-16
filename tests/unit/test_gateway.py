@@ -78,7 +78,7 @@ def test_a_valid_answer_is_parsed_metered_and_recorded_once() -> None:
     [call] = ledger.calls
     assert call.outcome is LLMCallOutcome.OK
     assert (call.route, call.tier, call.model) == ("pack_extraction", "fast", "claude-haiku-5-5")
-    assert call.prompt_version == "pack_extraction@v1"
+    assert call.prompt_version == "pack_extraction@v2"
     assert (call.subject_type, call.subject_id) == ("scan", "s-1")
     # 1000 input tokens at $0.10/M + 200 output tokens at $0.50/M
     assert call.cost_usd == Decimal("0.000200")

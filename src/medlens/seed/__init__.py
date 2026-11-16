@@ -37,6 +37,7 @@ from medlens.modules.products.models import (
     Batch,
     Product,
     ReferenceImage,
+    RegisterSource,
 )
 from medlens.modules.rbac.models import RoleName
 from medlens.modules.users.models import User
@@ -133,7 +134,8 @@ def run_seed(
         product["manufacturer_org_id"] = organization.id if organization else None
     from medlens.seed.greenbook import upsert_products
 
-    upsert_products(session, products)
+    # The committed sample comes from a snapshot: hand-typed rows are kept as they are.
+    upsert_products(session, products, RegisterSource.SNAPSHOT)
 
     _seed_batches(session, data_dir / "batches.csv")
     _seed_documents(session, data_dir / "documents")

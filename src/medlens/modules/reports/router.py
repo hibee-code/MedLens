@@ -5,6 +5,7 @@ from fastapi import Depends, Query
 
 from medlens.core.openapi import problem_responses
 from medlens.core.routing import api_v1_router
+from medlens.modules.products.models import INACTIVE_REGISTRATIONS
 from medlens.modules.rbac.access import Actor
 from medlens.modules.rbac.deps import require_permissions
 from medlens.modules.rbac.permissions import Permission
@@ -132,6 +133,8 @@ async def manufacturer_scans(
                 state=cell.state,  # type: ignore[arg-type]
                 iso_week=cell.iso_week,
                 flagged_scans=cell.scan_count,
+                registration_status=cell.registration_status,
+                registration_inactive=cell.registration_status in INACTIVE_REGISTRATIONS,
             )
             for cell in report.cells
         ],

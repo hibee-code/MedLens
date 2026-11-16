@@ -56,6 +56,9 @@ def pipeline_config(settings: Settings) -> PipelineConfig:
         spread_window_days=verification.spread_window_days,
         spread_state_limit=verification.spread_state_limit,
         llm_enabled=settings.llm.enabled,
+        read_register_fields=verification.read_register_fields,
+        register_check_scoring=verification.register_check_scoring,
+        barcode_check_scoring=verification.barcode_check_scoring,
         deadline_seconds=verification.pipeline_timeout_seconds,
     )
 
@@ -66,6 +69,8 @@ def scorer_for(settings: Settings) -> WeightedRuleScorer:
         suspicious_threshold=verification.suspicious_threshold,
         high_priority_threshold=verification.high_priority_threshold,
         min_field_confidence=verification.min_field_confidence,
+        register_check=verification.register_check_scoring,
+        barcode_check=verification.barcode_check_scoring,
     )
 
 

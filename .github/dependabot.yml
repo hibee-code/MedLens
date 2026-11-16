@@ -1,0 +1,31 @@
+# Dependabot: weekly pull requests for the Docker base images (Dockerfiles and the images
+# docker compose pins, MinIO's digest included). Python dependencies stay with uv and pip-audit
+# (make audit); GitHub Actions versions are bumped here too.
+#
+# Not covered: the PostGIS and pgvector builds pinned from the PostgreSQL apt archive in
+# docker/postgres/Dockerfile are apt package versions, which Dependabot does not track. Check
+# them by hand for each PostgreSQL security release (CLAUDE.md decision log, "Postgres image").
+version: 2
+updates:
+  - package-ecosystem: docker
+    directories:
+      - "/"
+      - "/docker/postgres"
+    schedule:
+      interval: weekly
+    labels: [dependencies, docker]
+    groups:
+      docker-images:
+        patterns: ["*"]
+
+  - package-ecosystem: docker-compose
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: [dependencies, docker]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: [dependencies, ci]

@@ -78,8 +78,37 @@ def test_tesseract_output_keeps_printed_lines(monkeypatch: pytest.MonkeyPatch) -
 
     assert result.text == "Emzor Syrup\nNAFDAC 04-0289"
     assert result.confidence == 0.9
+    assert result.lines == (("Emzor Syrup", 0.93), ("NAFDAC 04-0289", 0.87))
+    assert result.words == (("Emzor Syrup", (0.96, 0.9)), ("NAFDAC 04-0289", (0.88, 0.86)))
     assert calls[0]["timeout"] == 3
-    assert calls[0]["config"] == "--psm 11"
+    assert [call["config"] for call in calls] == ["--psm 11", "--psm 6"]
+
+
+@pytest.mark.parametrize(
+    ("mode", "passes"),
+    [
+        ("sparse_block", [("--psm 11", False), ("--psm 6", False)]),
+        ("sparse_inverted", [("--psm 11", False), ("--psm 11", True)]),  # the previous mode
+    ],
+)
+def test_the_ocr_mode_selects_the_passes(
+    mode: str, passes: list[tuple[str, bool]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from PIL import Image
+
+    seen: list[tuple[str, bool]] = []
+    grey = Image.open(PACKS / "genuine.jpg").convert("L")
+    corner = grey.getpixel((0, 0))
+
+    def image_to_data(image: Any, **kwargs: Any) -> dict[str, list[Any]]:
+        seen.append((kwargs["config"], image.getpixel((0, 0)) != corner))
+        return {"text": [], "conf": [], "block_num": [], "par_num": [], "line_num": []}
+
+    monkeypatch.setattr(vision.pytesseract, "image_to_data", image_to_data)
+
+    vision.TesseractOcr(mode=mode).read((PACKS / "genuine.jpg").read_bytes())  # type: ignore[arg-type]
+
+    assert seen == passes
 
 
 def test_tesseract_with_no_words_has_no_confidence(monkeypatch: pytest.MonkeyPatch) -> None:

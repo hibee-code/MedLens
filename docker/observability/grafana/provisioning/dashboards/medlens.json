@@ -293,6 +293,38 @@
       ]
     },
     {
+      "id": 304,
+      "type": "timeseries",
+      "title": "Signals held back by a guard (1h)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "sum by (signal) (increase(medlens_scan_signals_held_back_total[1h]))",
+          "legendFormat": "{{signal}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
       "type": "row",
       "title": "AI",
       "id": 102,
@@ -301,7 +333,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 18
+        "y": 26
       }
     },
     {
@@ -322,7 +354,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 19
+        "y": 27
       },
       "targets": [
         {
@@ -354,7 +386,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 19
+        "y": 27
       },
       "targets": [
         {
@@ -386,7 +418,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 19
+        "y": 27
       },
       "targets": [
         {
@@ -418,7 +450,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 19
+        "y": 27
       },
       "targets": [
         {
@@ -441,7 +473,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 27
+        "y": 35
       }
     },
     {
@@ -462,7 +494,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 28
+        "y": 36
       },
       "targets": [
         {
@@ -494,7 +526,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 28
+        "y": 36
       },
       "targets": [
         {
@@ -526,7 +558,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 28
+        "y": 36
       },
       "targets": [
         {
@@ -558,7 +590,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 28
+        "y": 36
       },
       "targets": [
         {

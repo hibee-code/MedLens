@@ -33,7 +33,7 @@ from medlens.adapters.fakes import (
 from medlens.adapters.sms import ConsoleSMS
 from medlens.ai.gateway.gateway import AsyncLLMGateway
 from medlens.ai.gateway.ledger import AsyncLedger
-from medlens.core.config import KnowledgeSettings, LLMSettings, Settings
+from medlens.core.config import KnowledgeSettings, LLMSettings, Settings, VerificationSettings
 from medlens.core.identifiers import NigerianState
 from medlens.core.ids import uuid7
 from medlens.core.security import hash_password
@@ -248,15 +248,25 @@ class Api:
             FakeBarcode(default=[BarcodeRead("DataMatrix", barcode)] if barcode else []),
         )
 
+        # Scoring switches as the worker has them by default (register check and cloned barcodes).
+        defaults = VerificationSettings()
+
         def pipeline(catalog: Any) -> VerificationPipeline:
             return VerificationPipeline(
                 catalog=catalog,
-                scorer=WeightedRuleScorer(),
+                scorer=WeightedRuleScorer(
+                    register_check=defaults.register_check_scoring,
+                    barcode_check=defaults.barcode_check_scoring,
+                ),
                 analyzer=analyzer,
                 barcode=barcodes,
                 ocr=ocr if readers else FakeOcr(default=OcrResult(text, ocr_confidence)),
                 llm=llm,
-                config=PipelineConfig(llm_enabled=llm is not None),
+                config=PipelineConfig(
+                    llm_enabled=llm is not None,
+                    register_check_scoring=defaults.register_check_scoring,
+                    barcode_check_scoring=defaults.barcode_check_scoring,
+                ),
             )
 
         return VerificationService(self.sync_sessions, SyncView(self.storage), pipeline)

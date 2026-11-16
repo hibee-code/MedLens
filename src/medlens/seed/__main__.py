@@ -20,12 +20,19 @@ def main() -> int:
         help="password for the e-mail test users (set only where none exists yet)",
     )
     parser.add_argument(
+        "--staff-password-file",
+        type=Path,
+        help="read --staff-password from this file (keeps it off command lines and logs)",
+    )
+    parser.add_argument(
         "--reset-staff-logins",
         action="store_true",
         help="with --staff-password: replace the e-mail test users' passwords and turn their MFA "
         "off (local demos)",
     )
     args = parser.parse_args()
+    if args.staff_password_file is not None:
+        args.staff_password = args.staff_password_file.read_text(encoding="utf-8").strip()
     if args.reset_staff_logins and not args.staff_password:
         sys.stderr.write("--reset-staff-logins needs --staff-password\n")
         return 2

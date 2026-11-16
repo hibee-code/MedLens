@@ -1,7 +1,9 @@
 # MedLens local stack.
 #
 #   docker compose up -d --wait                           # core services
-#   docker compose --profile observability up -d --wait   # + otel-collector, jaeger, prometheus, grafana
+#   docker compose --profile flower up -d --wait          # + Flower (Celery monitor, :5555)
+#   docker compose --profile observability up -d --wait   # + otel-collector, jaeger, prometheus,
+#                                                         #   grafana and Flower
 #
 # Configuration comes from .env (create it with `make dev-secrets`; documented in .env.example).
 # Credentials have no fallbacks here: compose refuses to start until .env provides them. Host ports
@@ -72,6 +74,9 @@ services:
       disable: true # the api image's HTTP healthcheck does not apply; Phase 10 adds a heartbeat
 
   flower:
+    # Off by default: a debugging tool, not part of the service (Prometheus has the queue
+    # metrics and alerts).
+    profiles: [flower, observability]
     image: mher/flower:2.0.1
     environment:
       CELERY_BROKER_URL: redis://redis:6379/${MEDLENS_REDIS__BROKER_DB:-1}

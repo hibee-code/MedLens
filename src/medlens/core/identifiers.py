@@ -65,6 +65,28 @@ def _split_prefix(prefix: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------------------------
+# GTINs (GS1 barcodes)
+def valid_gtin(gtin: str) -> bool:
+    """GS1 mod-10 check digit of a GTIN-8, -12, -13 or -14."""
+    if not (gtin.isdigit() and len(gtin) in {8, 12, 13, 14}):
+        return False
+    digits = [int(char) for char in gtin]
+    total = sum(
+        digit * (3 if index % 2 == 0 else 1) for index, digit in enumerate(reversed(digits[:-1]))
+    )
+    return (10 - total % 10) % 10 == digits[-1]
+
+
+def normalize_gtin(raw: str) -> str:
+    """A GTIN as 14 digits (shorter ones zero-padded, as GS1 DataMatrix codes carry them), its
+    check digit verified. ValueError otherwise."""
+    digits = re.sub(r"[\s\-]", "", raw.strip())
+    if not valid_gtin(digits):
+        raise ValueError("expected a GTIN of 8, 12, 13 or 14 digits with a valid check digit")
+    return digits.zfill(14)
+
+
+# ---------------------------------------------------------------------------------------------
 # Batch (lot) numbers
 #
 # Manufacturer-defined: letters, digits and - / . are all legitimate, so OCR confusions cannot

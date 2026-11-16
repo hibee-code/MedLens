@@ -83,18 +83,23 @@ class FakeLLM:
 
     @staticmethod
     def reading(confidence: float = 0.9, **fields: str | None) -> str:
-        """PackExtraction JSON: each of the four fields as printed, or not visible."""
+        """PackExtraction JSON: each of the four identity fields as printed, or not visible,
+        plus the optional register fields given (active_ingredients, strength, dosage_form,
+        manufacturer)."""
         names = ("nafdac_number", "product_name", "batch_number", "expiry_date")
-        return json.dumps(
-            {
-                name: (
-                    {"value": fields[name], "confidence": confidence}
-                    if fields.get(name)
-                    else {"value": "not_visible", "confidence": 0.0}
-                )
-                for name in names
-            }
-        )
+        optional = ("active_ingredients", "strength", "dosage_form", "manufacturer")
+        output: dict[str, dict[str, object]] = {
+            name: (
+                {"value": fields[name], "confidence": confidence}
+                if fields.get(name)
+                else {"value": "not_visible", "confidence": 0.0}
+            )
+            for name in names
+        }
+        for name in optional:
+            if fields.get(name):
+                output[name] = {"value": fields[name], "confidence": confidence}
+        return json.dumps(output)
 
 
 @dataclass

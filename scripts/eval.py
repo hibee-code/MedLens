@@ -1,11 +1,15 @@
 """Evaluate the scan pipeline and the assistant (``make eval``).
 
 Scans: every pack in seed/test_packs/expected.csv runs through the real pipeline in-process,
-with the seed register (seed/products.csv), the seed batches (seed/batches.csv) and the alerts
-in seed/documents as the catalog; OpenCV and zxing-cpp read the photos, Tesseract too when
-installed. The vision LLM is Claude through the gateway when ANTHROPIC_API_KEY is set, otherwise
-a stand-in that reads each pack's printed fields from the CSV (so without a key the eval
-measures the readers and the scorer, not the model).
+with the seed register (seed/products.csv, every register field), the seed batches
+(seed/batches.csv), the synthetic barcodes of seed/test_packs/gtins.csv and the alerts in
+seed/documents as the catalog; OpenCV and zxing-cpp read the photos, Tesseract too when
+installed (the worker image has it: without it the register fields are never read). The
+register-check and cloned-barcode scoring follow MEDLENS_VERIFICATION__* unless
+--register-check-scoring / --barcode-check-scoring say otherwise; the report lists each pack's
+verdict and the signals that raised it. The vision LLM is Claude through the gateway when
+ANTHROPIC_API_KEY is set, otherwise a stand-in that reads each pack's printed fields from the
+CSV (so without a key the eval measures the readers and the scorer, not the model).
 
 Assistant: the questions in seed/eval_questions.csv run against the knowledge base in the
 configured database (``make up`` then ``make seed``), skipped if there is none. With
@@ -19,6 +23,7 @@ is below --min-accuracy.
 
 import argparse
 import asyncio
+import contextlib
 import csv
 import json
 import os
@@ -48,11 +53,17 @@ from medlens.ai.gateway.providers import (
     ProviderRequest,
     ProviderResponse,
 )
-from medlens.core.config import KnowledgeSettings, LLMSettings
-from medlens.core.identifiers import normalize_nafdac_number
+from medlens.core.config import KnowledgeSettings, LLMSettings, VerificationSettings
+from medlens.core.identifiers import normalize_gtin
 from medlens.modules.knowledge.text import chunk, extract_pages
-from medlens.modules.products.models import RegistrationStatus
-from medlens.modules.verification.catalog import AlertFacts, BatchFacts, BatchSpread, ProductFacts
+from medlens.modules.products.register import ingredients_from_json
+from medlens.modules.verification.catalog import (
+    AlertFacts,
+    BatchFacts,
+    BatchSpread,
+    GtinOwner,
+    ProductFacts,
+)
 from medlens.modules.verification.extraction import (
     find_batch_numbers,
     find_nafdac_numbers,
@@ -60,6 +71,7 @@ from medlens.modules.verification.extraction import (
 )
 from medlens.modules.verification.pipeline import PipelineConfig, ScanInput, VerificationPipeline
 from medlens.modules.verification.scoring import WeightedRuleScorer
+from medlens.seed.greenbook import product_values
 
 ROOT = Path(__file__).resolve().parents[1]
 SEED = ROOT / "seed"
@@ -73,19 +85,28 @@ class SeedCatalog:
     products: dict[str, ProductFacts] = field(default_factory=dict)
     batches: dict[UUID, list[BatchFacts]] = field(default_factory=dict)
     alerts: dict[tuple[str, str], AlertFacts] = field(default_factory=dict)
+    gtins: dict[str, GtinOwner] = field(default_factory=dict)
 
     @classmethod
     def load(cls) -> "SeedCatalog":
         catalog = cls()
         with (SEED / "products.csv").open(newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
-                number = normalize_nafdac_number(row["nafdac_number"])
+                values: dict[str, Any] = product_values(row)
+                number = values["nafdac_number"]
                 catalog.products[number] = ProductFacts(
                     uuid4(),
                     number,
-                    row["brand_name"],
-                    row["generic_name"],
-                    RegistrationStatus(row["registration_status"]),
+                    values["brand_name"],
+                    values["generic_name"],
+                    values["registration_status"],
+                    active_ingredients=ingredients_from_json(values["active_ingredients"]),
+                    dosage_form=values["dosage_form"],
+                    holder_name=values["manufacturer_name"],
+                    registration_date=values["registration_date"],
+                    registration_expires_on=values["registration_expires_on"],
+                    source_url=values["source_url"],
+                    retrieved_on=values["retrieved_on"],
                 )
         with (SEED / "batches.csv").open(newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
@@ -96,8 +117,15 @@ class SeedCatalog:
                         row["batch_number"],
                         date.fromisoformat(row["expires_on"]),
                         frozenset(row["distribution_states"].split(";")),
+                        date.fromisoformat(row["manufactured_on"])
+                        if row.get("manufactured_on")
+                        else None,
                     )
                 )
+        with (SEED / "test_packs" / "gtins.csv").open(newline="", encoding="utf-8") as handle:
+            for row in csv.DictReader(handle):
+                owner = catalog.products[row["nafdac_number"]]
+                catalog.gtins[normalize_gtin(row["gtin"])] = GtinOwner(owner, row["source"])
         catalog._load_alerts()
         return catalog
 
@@ -141,6 +169,9 @@ class SeedCatalog:
         keys = {(nafdac_number, ""), (nafdac_number, batch_number or "")}
         return [self.alerts[key] for key in keys if key in self.alerts]
 
+    def gtin_owner(self, gtin: str) -> GtinOwner | None:
+        return self.gtins.get(gtin)
+
     def reference_similarity(
         self, product_id: UUID, embedding: list[float], *, model_version: str
     ) -> float | None:
@@ -149,7 +180,7 @@ class SeedCatalog:
 
 
 # --------------------------------------------------------------------------- scans
-def readers() -> tuple[Any, Any, Any]:
+def readers(ocr_mode: Any = "sparse_block") -> tuple[Any, Any, Any]:
     from medlens.adapters.vision import (
         OpenCvImageAnalysis,
         TesseractOcr,
@@ -157,7 +188,8 @@ def readers() -> tuple[Any, Any, Any]:
         tesseract_available,
     )
 
-    return OpenCvImageAnalysis(), ZxingBarcode(), TesseractOcr() if tesseract_available() else None
+    ocr = TesseractOcr(mode=ocr_mode) if tesseract_available() else None
+    return OpenCvImageAnalysis(), ZxingBarcode(), ocr
 
 
 def stand_in_reading(row: dict[str, str]) -> str:
@@ -170,7 +202,9 @@ def stand_in_reading(row: dict[str, str]) -> str:
     )
 
 
-def evaluate_scans(live: bool) -> tuple[dict[str, Any], Decimal]:
+def evaluate_scans(
+    live: bool, *, register_check: bool, barcode_check: bool, ocr_mode: Any = "sparse_block"
+) -> tuple[dict[str, Any], Decimal]:
     rows = list(csv.DictReader((SEED / "test_packs" / "expected.csv").open(encoding="utf-8")))
     images = {row["file"]: (SEED / "test_packs" / row["file"]).read_bytes() for row in rows}
     ledger = MemoryLedger()
@@ -179,18 +213,24 @@ def evaluate_scans(live: bool) -> tuple[dict[str, Any], Decimal]:
         llm: Any = GatewayPackReader(LLMGateway(settings, AnthropicProvider(settings), ledger))
     else:
         llm = FakeLLM({image_key(images[row["file"]]): stand_in_reading(row) for row in rows})
-    analyzer, barcode, ocr = readers()
+    analyzer, barcode, ocr = readers(ocr_mode)
+    scorer = WeightedRuleScorer(register_check=register_check, barcode_check=barcode_check)
     pipeline = VerificationPipeline(
         catalog=SeedCatalog.load(),
-        scorer=WeightedRuleScorer(),
+        scorer=scorer,
         analyzer=analyzer,
         barcode=barcode,
         ocr=ocr,
         llm=llm,
-        config=PipelineConfig(llm_enabled=True),
+        config=PipelineConfig(
+            llm_enabled=True,
+            register_check_scoring=register_check,
+            barcode_check_scoring=barcode_check,
+        ),
     )
     per_verdict: dict[str, Counter[str]] = defaultdict(Counter)
     latencies, llm_scans, mistakes = [], 0, []
+    packs: dict[str, dict[str, Any]] = {}
     for row in rows:
         started = time.perf_counter()
         result = pipeline.run(ScanInput(uuid4(), images[row["file"]], datetime.now(UTC)))
@@ -198,6 +238,13 @@ def evaluate_scans(live: bool) -> tuple[dict[str, Any], Decimal]:
         got, expected = result.score.verdict.value, row["expected_verdict"]
         per_verdict[expected]["right" if got == expected else "wrong"] += 1
         llm_scans += result.llm_used
+        packs[row["file"]] = {
+            "verdict": got,
+            "risk_score": result.score.risk_score,
+            "raised_by": sorted(
+                name.value for name, signal in result.signals.items() if (signal.value or 0) > 0
+            ),
+        }
         if got != expected:
             mistakes.append(f"{row['file']}: expected {expected}, got {got}")
     right = sum(counts["right"] for counts in per_verdict.values())
@@ -210,8 +257,10 @@ def evaluate_scans(live: bool) -> tuple[dict[str, Any], Decimal]:
         },
         "share_needing_llm": round(llm_scans / len(rows), 3),
         "mean_latency_ms": round(statistics.fmean(latencies) * 1000, 1),
-        "ocr": ocr is not None,
+        "ocr": ocr_mode if ocr is not None else None,
+        "scorer": scorer.version,
         "mistakes": mistakes,
+        "per_pack": packs,
     }
     return report, sum((call.cost_usd for call in ledger.calls), Decimal(0))
 
@@ -345,6 +394,18 @@ def main() -> int:
     parser.add_argument("--skip-assistant", action="store_true")
     parser.add_argument("--skip-scans", action="store_true")
     parser.add_argument(
+        "--register-check-scoring",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="score the register check (default: MEDLENS_VERIFICATION__REGISTER_CHECK_SCORING)",
+    )
+    parser.add_argument(
+        "--barcode-check-scoring",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="score cloned barcodes (default: MEDLENS_VERIFICATION__BARCODE_CHECK_SCORING)",
+    )
+    parser.add_argument(
         "--questions",
         type=Path,
         default=None,
@@ -352,8 +413,32 @@ def main() -> int:
     )
     args = parser.parse_args()
     live = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    verification = VerificationSettings()
+    if not args.skip_scans:
+        from medlens.core.config import SettingsError, get_settings
+
+        # No configured environment (CI, the worker image): the defaults.
+        with contextlib.suppress(SettingsError):
+            verification = get_settings().verification
+    register_check = (
+        verification.register_check_scoring
+        if args.register_check_scoring is None
+        else args.register_check_scoring
+    )
+    barcode_check = (
+        verification.barcode_check_scoring
+        if args.barcode_check_scoring is None
+        else args.barcode_check_scoring
+    )
     scans, scan_cost = (
-        ({"skipped": "--skip-scans"}, Decimal(0)) if args.skip_scans else evaluate_scans(live)
+        ({"skipped": "--skip-scans"}, Decimal(0))
+        if args.skip_scans
+        else evaluate_scans(
+            live,
+            register_check=register_check,
+            barcode_check=barcode_check,
+            ocr_mode=verification.ocr_mode,
+        )
     )
     assistant, assistant_cost = (
         ({"skipped": "--skip-assistant"}, Decimal(0))

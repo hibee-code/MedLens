@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from medlens.modules.control_plane.models import LLMCall
 from medlens.modules.hitl.models import Label
-from medlens.modules.products.models import Product
+from medlens.modules.products.models import Product, RegistrationStatus
 from medlens.modules.scans.models import Scan, ScanStatus, Verdict
 
 FLAGGED = (Verdict.SUSPICIOUS, Verdict.UNREGISTERED)
@@ -89,6 +89,7 @@ class ProductCell:
     state: str | None
     iso_week: str
     scan_count: int
+    registration_status: RegistrationStatus
 
 
 async def flagged_by_product_state_week(
@@ -97,7 +98,13 @@ async def flagged_by_product_state_week(
     week = func.to_char(func.timezone("UTC", Scan.created_at), 'IYYY-"W"IW')
     statement = (
         select(
-            Product.id, Product.nafdac_number, Product.brand_name, Scan.state, week, func.count()
+            Product.id,
+            Product.nafdac_number,
+            Product.brand_name,
+            Product.registration_status,
+            Scan.state,
+            week,
+            func.count(),
         )
         .join(Product, Product.id == Scan.matched_product_id)
         .where(
@@ -107,12 +114,23 @@ async def flagged_by_product_state_week(
             Scan.status == ScanStatus.COMPLETED,
             Scan.final_verdict.in_(FLAGGED),
         )
-        .group_by(Product.id, Product.nafdac_number, Product.brand_name, Scan.state, week)
+        .group_by(
+            Product.id,
+            Product.nafdac_number,
+            Product.brand_name,
+            Product.registration_status,
+            Scan.state,
+            week,
+        )
         .order_by(week.desc(), Product.brand_name, Scan.state)
     )
     return [
-        ProductCell(product_id, number, brand, state.value if state else None, label, int(count))
-        for product_id, number, brand, state, label, count in await session.execute(statement)
+        ProductCell(
+            product_id, number, brand, state.value if state else None, label, int(count), status
+        )
+        for product_id, number, brand, status, state, label, count in await session.execute(
+            statement
+        )
     ]
 
 

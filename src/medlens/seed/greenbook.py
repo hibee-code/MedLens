@@ -4,6 +4,7 @@ a full snapshot into ``products``.
     uv run python -m medlens.seed.greenbook export [--out data/greenbook]  # network, about 1 min
     uv run python -m medlens.seed.greenbook sample --snapshot FILE          # seed/products.csv
     uv run python -m medlens.seed.greenbook import [--source PATH | s3://... | https://...]
+                                       # make greenbook-import-snapshot; hand-typed rows kept
 
 Only a ~50-row sample (seed/products.csv) is committed. Full snapshots are kept outside Git, in
 private object storage: seed/greenbook-snapshot.json names the current one and its SHA-256, and
@@ -31,14 +32,14 @@ import re
 import sys
 import time
 from collections.abc import Iterator, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 from tenacity import (
@@ -49,7 +50,8 @@ from tenacity import (
 )
 
 from medlens.core.identifiers import normalize_nafdac_number
-from medlens.modules.products.models import Product, RegistrationStatus
+from medlens.modules.products.models import Product, RegisterSource, RegistrationStatus
+from medlens.modules.products.register import parse_ingredients
 
 ROOT = Path(__file__).resolve().parents[3]
 MANIFEST_PATH = ROOT / "seed" / "greenbook-snapshot.json"
@@ -351,9 +353,23 @@ def write_sample(records: Sequence[Record], path: Path | None = None) -> None:
 
 # --------------------------------------------------------------------------- import
 def product_values(record: Record) -> dict[str, object]:
-    """Columns of ``products`` from a snapshot or sample record (ValueError when invalid)."""
+    """Columns of ``products`` from a snapshot, sample or manual register record (ValueError
+    when the NAFDAC number, status or a date is invalid). Active ingredients are parsed from
+    generic_name and strength; a pair that does not parse leaves the list empty here (a full
+    snapshot must not fail on one odd row), while the manual import refuses it (register_import).
+    Rows without a source_url come from the Greenbook itself; retrieved_on falls back to the
+    snapshot's fetched_on. GTINs are not product columns (products.ProductGtin): only the
+    hand-typed import sets them."""
     expires = record["registration_expires_on"]
-    return {
+    registered = record.get("registration_date") or ""
+    retrieved = record.get("retrieved_on") or record.get("fetched_on") or ""
+    try:
+        ingredients = [
+            item.as_json() for item in parse_ingredients(record["generic_name"], record["strength"])
+        ]
+    except ValueError:
+        ingredients = []
+    values: dict[str, object] = {
         "nafdac_number": normalize_nafdac_number(record["nafdac_number"]),
         "brand_name": record["brand_name"],
         "generic_name": record["generic_name"],
@@ -363,37 +379,225 @@ def product_values(record: Record) -> dict[str, object]:
         "manufacturer_name": record["manufacturer"] or None,
         "registration_status": RegistrationStatus(record["registration_status"]),
         "registration_expires_on": date.fromisoformat(expires) if expires else None,
+        "active_ingredients": ingredients,
+        "registration_date": date.fromisoformat(registered) if registered else None,
+        "source_url": record.get("source_url") or GREENBOOK_URL,
+        "retrieved_on": date.fromisoformat(retrieved) if retrieved else None,
     }
+    return values
 
 
-def upsert_products(session: Session, products: Sequence[dict[str, object]]) -> int:
-    """Insert or update products by NAFDAC number in the caller's transaction; returns how many
-    were new. Only the columns present in the rows change, so a register import never touches
-    ``manufacturer_org_id`` (set by approved manufacturer claims)."""
-    if not products:
-        return 0
-    before = session.scalar(select(func.count()).select_from(Product)) or 0
-    statement = insert(Product)
-    statement = statement.on_conflict_do_update(
-        index_elements=[Product.nafdac_number],
-        set_={
-            column: statement.excluded[column]
-            for column in products[0]
-            if column != "nafdac_number"
+# Register facts compared when a snapshot row and a hand-typed row describe the same product.
+FACT_FIELDS = (
+    "brand_name",
+    "generic_name",
+    "strength",
+    "active_ingredients",
+    "dosage_form",
+    "pack_size",
+    "manufacturer_name",
+    "registration_status",
+    "registration_date",
+    "registration_expires_on",
+    "source_url",
+)
+
+
+def incoming_wins(
+    incoming: RegisterSource,
+    incoming_retrieved: date | None,
+    stored: RegisterSource,
+    stored_retrieved: date | None,
+) -> bool:
+    """Whether an incoming register row replaces the stored one (owner's rule): from the same
+    source, always (the newer import refreshes); between a snapshot and a hand-typed row, the
+    one retrieved most recently wins, and on the same day the snapshot wins. A row without a
+    retrieval date loses to one with a date."""
+    if incoming is stored or stored_retrieved is None:
+        return True
+    if incoming_retrieved is None:
+        return False
+    if incoming_retrieved != stored_retrieved:
+        return incoming_retrieved > stored_retrieved
+    return incoming is RegisterSource.SNAPSHOT
+
+
+@dataclass(frozen=True, slots=True)
+class Conflict:
+    """A product a snapshot and the hand-typed file both describe, differently."""
+
+    nafdac_number: str
+    fields: dict[str, tuple[object, object]]  # name -> (stored, incoming)
+    stored_source: RegisterSource
+    stored_retrieved_on: date | None
+    incoming_retrieved_on: date | None
+    incoming_wins: bool
+
+    def as_json(self) -> dict[str, Any]:
+        def show(value: object) -> object:
+            return value.isoformat() if isinstance(value, date) else value
+
+        return {
+            "nafdac_number": self.nafdac_number,
+            "stored_source": self.stored_source.value,
+            "stored_retrieved_on": show(self.stored_retrieved_on),
+            "incoming_retrieved_on": show(self.incoming_retrieved_on),
+            "winner": "incoming" if self.incoming_wins else "stored",
+            "fields": {name: [show(a), show(b)] for name, (a, b) in self.fields.items()},
         }
-        | {"updated_at": func.now()},
-    )
-    for start in range(0, len(products), UPSERT_CHUNK):
-        session.execute(statement, list(products[start : start + UPSERT_CHUNK]))
-    after = session.scalar(select(func.count()).select_from(Product)) or 0
-    return after - before
 
 
-def import_snapshot(session: Session, data: bytes, manifest: Manifest) -> tuple[int, int]:
-    """Verify and load a full snapshot; returns (new, updated)."""
+@dataclass
+class Plan:
+    """What an upsert of register rows from ``source`` would do."""
+
+    source: RegisterSource
+    new: list[dict[str, object]] = field(default_factory=list)
+    updated: list[dict[str, object]] = field(default_factory=list)
+    unchanged: int = 0
+    kept: list[str] = field(default_factory=list)  # the other source's newer rows
+    conflicts: list[Conflict] = field(default_factory=list)
+
+
+def plan_upsert(
+    session: Session, products: Sequence[dict[str, object]], source: RegisterSource
+) -> Plan:
+    """Compare incoming rows with the stored ones: new, updated, unchanged, kept (the stored row
+    of the other source is more recent, incoming_wins) and every conflicting field between a
+    snapshot row and a hand-typed row, whoever wins."""
+    plan = Plan(source)
+    numbers = [str(product["nafdac_number"]) for product in products]
+    stored: dict[str, Product] = {}
+    for start in range(0, len(numbers), UPSERT_CHUNK):
+        chunk = numbers[start : start + UPSERT_CHUNK]
+        for product in session.scalars(select(Product).where(Product.nafdac_number.in_(chunk))):
+            stored[product.nafdac_number] = product
+    for row in products:
+        current = stored.get(str(row["nafdac_number"]))
+        if current is None:
+            plan.new.append(row)
+            continue
+        retrieved = row.get("retrieved_on")
+        incoming_retrieved = retrieved if isinstance(retrieved, date) else None
+        differs = {
+            name: (getattr(current, name), row[name])
+            for name in FACT_FIELDS
+            if name in row and getattr(current, name) != row[name]
+        }
+        wins = incoming_wins(
+            source, incoming_retrieved, current.register_source, current.retrieved_on
+        )
+        if current.register_source is not source and differs:
+            plan.conflicts.append(
+                Conflict(
+                    current.nafdac_number,
+                    differs,
+                    current.register_source,
+                    current.retrieved_on,
+                    incoming_retrieved,
+                    wins,
+                )
+            )
+        if not wins:
+            plan.kept.append(current.nafdac_number)
+        elif (
+            differs
+            or current.register_source is not source
+            or current.retrieved_on != incoming_retrieved
+        ):
+            plan.updated.append(row)
+        else:
+            plan.unchanged += 1
+    return plan
+
+
+@dataclass(frozen=True, slots=True)
+class Upserted:
+    new: int
+    updated: int
+    kept: int  # rows of the other source that were retrieved more recently
+
+
+def upsert_products(
+    session: Session,
+    products: Sequence[dict[str, object]],
+    source: RegisterSource,
+    plan: Plan | None = None,
+) -> Upserted:
+    """Insert or update products by NAFDAC number in the caller's transaction, by the rule of
+    ``incoming_wins`` (a newer row of the other source is kept), recording ``source`` on every
+    row written. Only the columns present in the rows change, so a register import never
+    touches ``manufacturer_org_id`` (set by approved manufacturer claims). Nothing is ever
+    deleted: a hand-typed row missing from a snapshot stays."""
+    plan = plan or plan_upsert(session, products, source)
+    rows = [{**product, "register_source": source} for product in plan.new + plan.updated]
+    if rows:
+        statement = insert(Product)
+        stored, excluded = Product.__table__.c, statement.excluded
+        newer = (
+            excluded.retrieved_on >= stored.retrieved_on
+            if source is RegisterSource.SNAPSHOT
+            else excluded.retrieved_on > stored.retrieved_on
+        )
+        statement = statement.on_conflict_do_update(
+            index_elements=[Product.nafdac_number],
+            set_={column: excluded[column] for column in rows[0] if column != "nafdac_number"}
+            | {"updated_at": func.now()},
+            # The same rule in SQL, should the table change between the plan and the write.
+            where=or_(
+                stored.register_source == source.value,
+                stored.retrieved_on.is_(None),
+                and_(excluded.retrieved_on.is_not(None), newer),
+            ),
+        )
+        for start in range(0, len(rows), UPSERT_CHUNK):
+            session.execute(statement, rows[start : start + UPSERT_CHUNK])
+    return Upserted(len(plan.new), len(plan.updated), len(plan.kept))
+
+
+def import_snapshot(
+    session: Session, data: bytes, manifest: Manifest, *, apply: bool = True
+) -> tuple[Plan, Upserted | None]:
+    """Verify a full snapshot and plan its import; apply it when ``apply``. A hand-typed row
+    retrieved more recently than the snapshot is kept; every conflicting field is in the plan."""
     products = [product_values(record) for record in decode_snapshot(data, manifest)]
-    new = upsert_products(session, products)
-    return new, len(products) - new
+    plan = plan_upsert(session, products, RegisterSource.SNAPSHOT)
+    if not apply:
+        return plan, None
+    return plan, upsert_products(session, products, RegisterSource.SNAPSHOT, plan)
+
+
+def render_conflicts(conflicts: Sequence[Conflict], incoming: str) -> list[str]:
+    """Report lines: every conflicting field, both values, both dates and the winner."""
+    lines: list[str] = []
+    if conflicts:
+        lines.append(
+            f"  conflicts with stored rows of the other source ({len(conflicts)}; the most "
+            "recently retrieved wins, on the same day the snapshot):"
+        )
+    for conflict in conflicts:
+        stored = conflict.stored_source.value
+        winner = incoming if conflict.incoming_wins else f"stored {stored} row"
+        lines.append(
+            f"  <> {conflict.nafdac_number}: stored {stored} retrieved "
+            f"{_day(conflict.stored_retrieved_on)}, {incoming} retrieved "
+            f"{_day(conflict.incoming_retrieved_on)} -> {winner} wins"
+        )
+        lines += [
+            f"      {name}: {_shown(a)!r} (stored) vs {_shown(b)!r} ({incoming})"
+            for name, (a, b) in conflict.fields.items()
+        ]
+    return lines
+
+
+def _day(value: date | None) -> str:
+    return value.isoformat() if value else "(no date)"
+
+
+def _shown(value: object) -> object:
+    if isinstance(value, date):
+        return value.isoformat()
+    return value.value if isinstance(value, RegistrationStatus) else value
 
 
 # --------------------------------------------------------------------------- CLI
@@ -404,15 +608,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     export_cmd.add_argument("--out", type=Path, help=f"default: {DEFAULT_EXPORT_DIR}")
     sample_cmd = commands.add_parser("sample", help="rewrite seed/products.csv from a snapshot")
     sample_cmd.add_argument("--snapshot", required=True, help="path, s3:// or https:// source")
-    import_cmd = commands.add_parser("import", help="load the current snapshot into products")
+    import_cmd = commands.add_parser(
+        "import", help="report on the current snapshot; load it into products with --confirm"
+    )
     import_cmd.add_argument("--source", help="path, s3:// or https:// (default: the manifest)")
+    import_cmd.add_argument("--confirm", action="store_true", help="apply (else report only)")
     args = parser.parse_args(argv)
     try:
         if args.command == "export":
             return _export(args.out or DEFAULT_EXPORT_DIR)
         if args.command == "sample":
             return _sample(args.snapshot)
-        return _import(args.source)
+        return _import(args.source, confirm=args.confirm)
     except SnapshotError as exc:
         sys.stderr.write(f"{exc}\n")
         return 1
@@ -441,14 +648,10 @@ def _sample(source: str) -> int:
     return 0
 
 
-def _import(source: str | None) -> int:
+def _import(source: str | None, *, confirm: bool = False) -> int:
     from medlens.core.bootstrap import configure_process
     from medlens.core.config import get_settings
-    from medlens.db.session import (
-        create_sync_engine,
-        create_sync_session_factory,
-        sync_session_scope,
-    )
+    from medlens.db.session import create_sync_engine, create_sync_session_factory
 
     manifest = Manifest.read()
     location = source or manifest.location
@@ -461,15 +664,27 @@ def _import(source: str | None) -> int:
     data = _read_source(location)
     engine = create_sync_engine(settings.database, application_name="medlens-greenbook-import")
     try:
-        with sync_session_scope(create_sync_session_factory(engine)) as session:
-            new, updated = import_snapshot(session, data, manifest)
+        with create_sync_session_factory(engine)() as session:
+            plan, result = import_snapshot(session, data, manifest, apply=confirm)
+            sys.stdout.write(
+                "\n".join(
+                    [
+                        f"{manifest.file} (fetched {manifest.fetched_on}): {len(plan.new)} new, "
+                        f"{len(plan.updated)} updated, {plan.unchanged} unchanged, "
+                        f"{len(plan.kept)} hand-typed rows retrieved more recently kept",
+                        *render_conflicts(plan.conflicts, "snapshot"),
+                    ]
+                )
+                + "\n"
+            )
+            if result is None:
+                sys.stderr.write("Report only. Run again with CONFIRM=1 to apply.\n")
+                return 0
+            session.commit()
     finally:
         engine.dispose()
     clear_cached_products(settings)
-    sys.stdout.write(
-        f"imported {manifest.file} (fetched {manifest.fetched_on}): {new} new products, "
-        f"{updated} updated\n"
-    )
+    sys.stderr.write(f"Applied: {result.new} new, {result.updated} updated.\n")
     return 0
 
 

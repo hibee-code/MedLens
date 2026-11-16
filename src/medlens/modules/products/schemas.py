@@ -17,10 +17,30 @@ _PRODUCT_EXAMPLE: dict[str, JsonValue] = {
     "pack_size": "1 x 10",
     "manufacturer_name": "GlaxoSmithKline Consumer Nigeria PLC (GSK)",
     "registration_status": "active",
+    "registration_inactive": False,
+    "registration_date": "2024-01-31",
     "registration_expires_on": "2029-01-31",
+    "active_ingredients": [
+        {"name": "paracetamol", "strength_value": 500.0, "strength_unit": "mg"},
+        {"name": "caffeine", "strength_value": 65.0, "strength_unit": "mg"},
+    ],
+    "source_url": "https://greenbook.nafdac.gov.ng/",
+    "retrieved_on": "2026-11-03",
     "manufacturer_onboarded": True,
     "match_score": None,
 }
+
+
+INACTIVE_REGISTRATION = (
+    "The registration is suspended or revoked: its batches and reference images are kept, "
+    "but flagged."
+)
+
+
+class IngredientRead(ReadModel):
+    name: str = Field(description="Normalised active ingredient (salt and spelling removed).")
+    strength_value: float | None
+    strength_unit: str | None = Field(description='mg, IU, %, "mg/5 mL", "mg/dose"...')
 
 
 class ProductRead(ReadModel):
@@ -34,7 +54,18 @@ class ProductRead(ReadModel):
     pack_size: str | None
     manufacturer_name: str | None = Field(description="Registration holder, as in the register.")
     registration_status: RegistrationStatus
+    registration_inactive: bool = Field(description=INACTIVE_REGISTRATION)
+    registration_date: date | None
     registration_expires_on: date | None
+    active_ingredients: list[IngredientRead] = Field(
+        description="Parsed from the register's ingredient and strength text."
+    )
+    source_url: str | None = Field(description="The NAFDAC Greenbook page the entry was read from.")
+    retrieved_on: date | None = Field(description="When the register entry was read.")
+    gtins: list[str] = Field(
+        default_factory=list,
+        description="The product's barcodes (GS1 GTINs, 14 digits), as its holder declared them.",
+    )
     manufacturer_onboarded: bool = Field(
         description="The registration holder uses MedLens and declares batches for this product."
     )
@@ -87,6 +118,7 @@ class BatchRead(ReadModel):
     quantity: int | None
     distribution_states: list[str]
     created_at: datetime
+    registration_inactive: bool = Field(default=False, description=INACTIVE_REGISTRATION)
 
 
 class BatchImportResult(ReadModel):
@@ -122,6 +154,7 @@ class ReferenceImageRead(ReadModel):
     status: ReviewStatus
     created_at: datetime
     reviewed_at: datetime | None
+    registration_inactive: bool = Field(default=False, description=INACTIVE_REGISTRATION)
 
 
 class ReviewDecision(InputModel):
@@ -180,3 +213,48 @@ class ClaimRead(ReadModel):
     review_note: str | None
     created_at: datetime
     reviewed_at: datetime | None
+
+
+# ------------------------------------------------------------------ authorisations
+class AuthorizationCreate(InputModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "organization_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e55",
+                    "note": "Holder's letter of 2026-11-01 appointing the contract manufacturer.",
+                }
+            ]
+        }
+    )
+
+    organization_id: UUID = Field(description="A verified organisation (not the holder).")
+    note: SafeText | None = Field(
+        default=None, max_length=1000, description="The holder's authorisation, as evidence."
+    )
+
+
+class AuthorizationRead(ReadModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e60",
+                    "nafdac_number": "04-0005",
+                    "organization_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e55",
+                    "note": "Holder's letter of 2026-11-01 appointing the contract manufacturer.",
+                    "active": True,
+                    "created_at": "2026-11-12T09:00:00Z",
+                    "revoked_at": None,
+                }
+            ]
+        }
+    )
+
+    id: UUID
+    nafdac_number: str
+    organization_id: UUID
+    note: str | None
+    active: bool
+    created_at: datetime
+    revoked_at: datetime | None
