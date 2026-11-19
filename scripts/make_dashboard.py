@@ -96,6 +96,11 @@ ROWS: list[tuple[str, list[tuple[str, str, str, str]]]] = [
                 "percentunit",
             ),
             panel(
+                "Model fallbacks per minute",
+                "sum by (route, reason) (rate(medlens_llm_fallbacks_total[5m])) * 60",
+                "{{route}} {{reason}}",
+            ),
+            panel(
                 "Assistant outcomes per minute",
                 "sum by (outcome) (rate(medlens_assistant_requests_total[15m])) * 60",
                 "{{outcome}}",

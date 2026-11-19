@@ -25,7 +25,8 @@ env:
   UV_LOCKED: "1" # fail if uv.lock is out of date
   # Empty on purpose. (MEDLENS_LLM__* stay unset: tests build their own settings, and the
   # application's key defaults to none, which keeps every model call off.)
-  ANTHROPIC_API_KEY: ""
+  GEMINI_API_KEY: ""
+  GOOGLE_API_KEY: ""
   MEDLENS_LIVE_TESTS: "0"
   HF_HUB_DISABLE_TELEMETRY: "1"
   ORT_DISABLE_TELEMETRY: "1"

@@ -3,10 +3,10 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import exists, select, update
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from medlens.modules.auth.models import ApiKey, RefreshToken
+from medlens.modules.auth.models import ApiKey, MfaRecoveryCode, RefreshToken
 from medlens.modules.organizations.models import (
     Membership,
     MembershipStatus,
@@ -14,6 +14,7 @@ from medlens.modules.organizations.models import (
     OrganizationStatus,
     OrganizationType,
 )
+from medlens.modules.rbac.models import PUBLIC_ROLES
 from medlens.modules.users.models import User
 
 
@@ -57,6 +58,15 @@ class AuthRepository:
         )
         return bool(await self.session.scalar(statement))
 
+    async def is_staff(self, user: User) -> bool:
+        """A staff account: any organization membership (whatever its status), or a global role
+        beyond the public ones. Staff sign in with password and MFA only (decision log,
+        "Accounts: consumers sign themselves up, staff are invited")."""
+        if user.global_role not in PUBLIC_ROLES:
+            return True
+        statement = select(exists().where(Membership.user_id == user.id))
+        return bool(await self.session.scalar(statement))
+
     # ------------------------------------------------------------------ sessions
     async def refresh_token_for_update(self, token_hash: str) -> RefreshToken | None:
         """Locks the row so two concurrent refreshes with one token cannot both succeed."""
@@ -76,6 +86,36 @@ class AuthRepository:
     async def tokens_valid_after(self, user_id: UUID) -> datetime | None:
         statement = select(User.tokens_valid_after).where(User.id == user_id)
         return (await self.session.execute(statement)).scalar_one_or_none()
+
+    # ------------------------------------------------------------------ recovery codes
+    async def replace_recovery_codes(self, user_id: UUID, digests: list[str]) -> None:
+        await self.delete_recovery_codes(user_id)
+        self.session.add_all(MfaRecoveryCode(user_id=user_id, code_hash=d) for d in digests)
+        await self.session.flush()
+
+    async def delete_recovery_codes(self, user_id: UUID) -> None:
+        await self.session.execute(
+            delete(MfaRecoveryCode).where(MfaRecoveryCode.user_id == user_id)
+        )
+
+    async def unused_recovery_code(self, user_id: UUID, code_hash: str) -> MfaRecoveryCode | None:
+        return await self.session.scalar(
+            select(MfaRecoveryCode)
+            .where(
+                MfaRecoveryCode.user_id == user_id,
+                MfaRecoveryCode.code_hash == code_hash,
+                MfaRecoveryCode.used_at.is_(None),
+            )
+            .with_for_update()
+        )
+
+    async def recovery_codes_left(self, user_id: UUID) -> int:
+        count = await self.session.scalar(
+            select(func.count())
+            .select_from(MfaRecoveryCode)
+            .where(MfaRecoveryCode.user_id == user_id, MfaRecoveryCode.used_at.is_(None))
+        )
+        return int(count or 0)
 
     async def invalidate_access_tokens(self, user_id: UUID, now: datetime) -> None:
         await self.session.execute(

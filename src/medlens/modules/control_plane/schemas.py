@@ -31,7 +31,7 @@ class AIUsage(ReadModel):
                 {
                     "ai_enabled": True,
                     "assistant_enabled": True,
-                    "models": {"fast": "claude-haiku-5-5", "balanced": "claude-sonnet-5-5"},
+                    "models": {"fast": "gemini-3.5-flash-lite", "balanced": "gemini-3.8-flash"},
                     "budget": {
                         "daily_usd": "5.00",
                         "spent_today_usd": "0.412300",

@@ -25,14 +25,21 @@ def claims(api: Api, token: str) -> tuple[str, ...]:
 async def test_staff_login_returns_a_session_with_the_single_organization(api: Api) -> None:
     user, organization = await api.user_with_role(RoleName.PHARMACY_STAFF)
 
+    body = await api.staff_login(user)  # password, then the authenticator code
+
+    assert body["organization_id"] == str(organization.id if organization else None)
+    assert claims(api, body["access_token"]) == ("pwd", "mfa")
+    assert "auth.login_succeeded" in await api.audit_actions(user.id)
+
+
+async def test_a_consumer_password_login_needs_no_second_factor(api: Api) -> None:
+    user = await api.create_user()  # a consumer account with a password
+
     response = await api.password_login(user.email or "")
 
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["status"] == "authenticated"
-    assert body["organization_id"] == str(organization.id if organization else None)
-    assert claims(api, body["access_token"]) == ("pwd",)
-    assert "auth.login_succeeded" in await api.audit_actions(user.id)
+    assert response.json()["status"] == "authenticated"
+    assert response.json()["organization_id"] is None
+    assert claims(api, response.json()["access_token"]) == ("pwd",)
 
 
 async def test_unknown_email_and_wrong_password_look_identical(
@@ -145,10 +152,13 @@ async def test_regulators_and_platform_admins_must_enrol_in_mfa(api: Api, role: 
     assert {"auth.mfa_enrolment_started", "auth.mfa_enabled", "auth.mfa_challenged"} <= set(actions)
 
 
-async def test_other_staff_may_opt_in_to_mfa(api: Api) -> None:
+async def test_pharmacy_staff_must_enrol_mfa_too(api: Api) -> None:
+    """Every staff account needs MFA (decision log, "Accounts: consumers sign themselves up,
+    staff are invited"), not only regulators and platform admins."""
     user, _ = await api.user_with_role(RoleName.PHARMACY_ADMIN)
-    session = (await api.password_login(user.email or "")).json()
-    headers = api.bearer(session["access_token"])
+    first = (await api.password_login(user.email or "")).json()
+    assert first["status"] == "mfa_enrolment_required"
+    headers = api.bearer(first["mfa_token"])
 
     setup = (await api.client.post("/api/v1/auth/mfa/enrol", headers=headers)).json()
     wrong = await api.client.post(
@@ -163,7 +173,7 @@ async def test_other_staff_may_opt_in_to_mfa(api: Api) -> None:
 
     assert wrong.status_code == 422
     assert confirmed.status_code == 200
-    assert again.status_code == 409
+    assert again.status_code in {401, 409}  # the enrolment token is spent, or MFA is on
     assert (await api.password_login(user.email or "")).json()["status"] == "mfa_required"
 
 

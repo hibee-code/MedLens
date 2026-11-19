@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
-# MedLens demo (`make demo`): starts the stack, migrates, seeds, signs in as each kind of user
-# and walks through a genuine scan, a fake scan, a hotspot query and an assistant question,
-# printing every response.
+# MedLens demo (`make demo`): starts the stack, migrates, seeds, onboards the people (the first
+# platform admin with `make bootstrap-admin`, then staff by invitation into the seeded
+# organizations, each setting up MFA) and walks through a genuine scan, a fake scan, a hotspot
+# query and an assistant question, printing every response. Consumers scan as guests (a device
+# id each), so no sign-in code is sent.
 #
-#   DEMO_PASSWORD   staff password for the seed users (default: a random one, kept in
+#   DEMO_PASSWORD   password of the demo's staff accounts (default: a random one, kept in
 #                   .demo/password; never printed)
 #   SKIP_UP=1       use a stack that is already running
 #
 # Local development only: it refuses to run against staging or production settings. Staff
-# sessions (refresh tokens), authenticator secrets and the password are kept in .demo/
-# (gitignored, mode 700): reruns refresh the saved sessions instead of signing in again, so
-# they stay under the sign-in rate limit (which is not changed). `make demo-reset CONFIRM=1`
-# clears the demo's scans between runs.
+# sessions (refresh tokens), authenticator secrets, recovery codes and the password are kept in
+# .demo/ (gitignored, mode 700): reruns refresh the saved sessions instead of signing in again,
+# so they stay under the sign-in rate limit (which is not changed). `make demo-reset CONFIRM=1`
+# clears the demo's scans between runs; with ACCOUNTS=1 it also erases the demo's accounts
+# (addresses @medlens.test, which are never e-mailed: reserved test domain).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -56,7 +59,11 @@ call() {
   rm -f "$headers"
   return 1
 }
-json() { uv run --quiet python -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
+json() {  # python expression over d (the JSON on stdin), [arguments as sys.argv[1:]]
+  local expression="$1"
+  shift
+  uv run --quiet python -c "import json,sys; d=json.load(sys.stdin); print($expression)" "$@"
+}
 show() { uv run --quiet python -m json.tool; }
 
 if [[ "${SKIP_UP:-0}" != "1" ]]; then
@@ -77,31 +84,18 @@ saved_session() {  # name -> a fresh access token from the saved session, or fai
   json "d['access_token']" <<<"$response"
 }
 
-step "Migrating and seeding"
+step "Migrating and seeding (organizations and products; no users)"
 make migrate
-# Saved staff sessions are refreshed first: a sign-in (password + MFA) counts against the
-# sign-in rate limit, a refresh does not.
-PHARMACIST="$(saved_session pharmacist || true)"
-MANUFACTURER="$(saved_session manufacturer || true)"
-REGULATOR="$(saved_session regulator || true)"
-SEED=(uv run python -m medlens.seed --staff-password-file "$STATE/password")
-if [[ -n "$PHARMACIST" && -n "$MANUFACTURER" && -n "$REGULATOR" ]]; then
-  "${SEED[@]}"  # keep the staff logins: their saved sessions are still valid
-else
-  "${SEED[@]}" --reset-staff-logins
-  rm -f "$STATE"/*.totp "$SESSIONS"/*  # MFA was just switched off: enrol and sign in again
-  PHARMACIST="" MANUFACTURER="" REGULATOR=""
-fi
+uv run python -m medlens.seed
 # The synthetic barcodes of the test packs (seed/test_packs/gtins.csv): local only, for the
 # cloned-barcode and same-holder steps.
 uv run python -m medlens.seed.demo_gtins seed/test_packs/gtins.csv
 make embeddings  # the workers embed the seeded documents while the demo signs in and scans
-echo "Staff password for the seed users: in $STATE/password"
 
-password_login() {  # email -> token response (enrols MFA for roles that require it)
-  local email="$1" response status mfa_token secret code
-  response="$(call -X POST "$API/api/v1/auth/login" -H 'Content-Type: application/json' \
-    -d "{\"email\": \"$email\", \"password\": \"$DEMO_PASSWORD\"}")"
+totp_now() { uv run --quiet python -c "import pyotp, sys; print(pyotp.TOTP(sys.argv[1]).now())" "$1"; }
+
+finish_mfa() {  # email, sign-in answer -> token response (sets up MFA on the first sign-in)
+  local email="$1" response="$2" status mfa_token secret confirmed
   status="$(json "d['status']" <<<"$response")"
   if [[ "$status" == "authenticated" ]]; then
     printf '%s' "$response"
@@ -112,35 +106,94 @@ password_login() {  # email -> token response (enrols MFA for roles that require
     secret="$(call -X POST "$API/api/v1/auth/mfa/enrol" \
       -H "Authorization: Bearer $mfa_token" | json "d['secret']")"
     (umask 177 && printf '%s' "$secret" >"$STATE/$email.totp")
-    code="$(uv run --quiet python -c "import pyotp; print(pyotp.TOTP('$secret').now())")"
-    call -X POST "$API/api/v1/auth/mfa/confirm" -H "Authorization: Bearer $mfa_token" \
-      -H 'Content-Type: application/json' -d "{\"code\": \"$code\"}"
+    confirmed="$(call -X POST "$API/api/v1/auth/mfa/confirm" \
+      -H "Authorization: Bearer $mfa_token" -H 'Content-Type: application/json' \
+      -d "{\"code\": \"$(totp_now "$secret")\"}")"
+    (umask 177 && json "'\\n'.join(d['recovery_codes'])" <<<"$confirmed" >"$STATE/$email.recovery")
+    printf '%s' "$confirmed"
     return
   fi
-  secret="$(cat "$STATE/$email.totp")"
-  code="$(uv run --quiet python -c "import pyotp; print(pyotp.TOTP('$secret').now())")"
   call -X POST "$API/api/v1/auth/mfa/verify" -H 'Content-Type: application/json' \
-    -d "{\"mfa_token\": \"$mfa_token\", \"code\": \"$code\"}"
+    -d "{\"mfa_token\": \"$mfa_token\", \"code\": \"$(totp_now "$(cat "$STATE/$email.totp")")\"}"
 }
 
-staff_session() {  # name, email -> access token: the saved session, else a sign-in (saved)
+password_login() {  # email -> token response
   local response
-  response="$(password_login "$2")"
-  save_session "$1" "$response"
-  json "d['access_token']" <<<"$response"
+  response="$(call -X POST "$API/api/v1/auth/login" -H 'Content-Type: application/json' \
+    -d "{\"email\": \"$1\", \"password\": \"$DEMO_PASSWORD\"}")"
+  finish_mfa "$1" "$response"
 }
 
-consumer_login() {  # phone -> access token (the console SMS provider logs the code)
-  local phone="$1" code
-  call -X POST "$API/api/v1/auth/otp/request" -H 'Content-Type: application/json' \
-    -d "{\"phone\": \"$phone\"}" >/dev/null
-  sleep 1
-  # The log line has the code but not the number (privacy): take the newest code.
-  code="$(docker compose logs api --no-color --since 2m 2>/dev/null | grep sms.console_message \
-    | sed -nE 's/.*code is ([0-9]{6}).*/\1/p' | tail -1)"
-  call -X POST "$API/api/v1/auth/otp/verify" -H 'Content-Type: application/json' \
-    -d "{\"phone\": \"$phone\", \"code\": \"$code\"}" | json "d['access_token']"
+accept_new() {  # email, invitation token, full name -> token response (account created)
+  local response
+  response="$(call -X POST "$API/api/v1/invitations/$2/accept-new" \
+    -H 'Content-Type: application/json' \
+    -d "{\"full_name\": \"$3\", \"password\": \"$DEMO_PASSWORD\"}")"
+  finish_mfa "$1" "$response"
 }
+
+session_token() {  # name, token response -> access token (the session is saved)
+  save_session "$1" "$2"
+  json "d['access_token']" <<<"$2"
+}
+
+step "Onboarding: the first platform admin (make bootstrap-admin), then staff by invitation"
+ADMIN_EMAIL=demo.admin@medlens.test
+if ADMIN="$(saved_session admin)"; then
+  echo "admin: reusing the saved session"
+elif [[ -f "$STATE/$ADMIN_EMAIL.totp" ]]; then
+  ADMIN="$(session_token admin "$(password_login "$ADMIN_EMAIL")")"
+else
+  if ! output="$(make --no-print-directory bootstrap-admin EMAIL="$ADMIN_EMAIL" 2>&1)"; then
+    printf '%s\n' "$output" >&2
+    echo "A platform admin already exists that this demo cannot sign in as (an earlier seed's" \
+      "account, or a removed .demo/). Erase the demo accounts with" \
+      "'make demo-reset ACCOUNTS=1 CONFIRM=1', then run the demo again." >&2
+    exit 1
+  fi
+  invitation="$(sed -nE 's/^Invitation token \(local only\): (.+)$/\1/p' <<<"$output")"
+  ADMIN="$(session_token admin "$(accept_new "$ADMIN_EMAIL" "$invitation" "Demo Admin")")"
+  echo "admin: invited by the bootstrap command, account created, MFA set up"
+fi
+
+org_id() {  # type, exact name -> the seeded organization's id
+  call "$API/api/v1/organizations?type=$1&limit=100" -H "Authorization: Bearer $ADMIN" \
+    | json "next(o['id'] for o in d['items'] if o['name'] == sys.argv[1])" "$2"
+}
+
+join() {  # name, email, organization type, organization name, role, full name -> access token
+  local name="$1" email="$2" organization token response
+  if token="$(saved_session "$name")"; then
+    printf '%s' "$token"
+    return
+  fi
+  if [[ -f "$STATE/$email.totp" ]]; then  # joined in an earlier run: sign in
+    response="$(password_login "$email")"
+  else
+    organization="$(org_id "$3" "$4")"
+    token="$(call -X POST "$API/api/v1/organizations/$organization/invitations" \
+      -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+      -d "{\"email\": \"$email\", \"role\": \"$5\"}" | json "d['token']")"
+    response="$(accept_new "$email" "$token" "$6")"
+    echo "$name: invited as $5 into $4, account created, MFA set up" >&2
+  fi
+  session_token "$name" "$response"
+}
+
+PHARMACIST="$(join pharmacist demo.pharmacist@medlens.test pharmacy \
+  "MedLens Test Pharmacy (seed)" pharmacy_staff "Demo Pharmacist")"
+MANUFACTURER="$(join manufacturer demo.manufacturer@medlens.test manufacturer \
+  "Emzor Pharmaceutical Industries Limited" manufacturer_staff "Demo Manufacturer")"
+REGULATOR="$(join regulator demo.regulator@medlens.test regulator \
+  "National Agency for Food and Drug Administration and Control (NAFDAC)" regulator_admin \
+  "Demo Regulator")"
+echo "staff sessions ready (password in $STATE/password; authenticator secrets and recovery" \
+  "codes in $STATE/)"
+# Consumers scan as guests, each with its own device id: the same photo from the same person
+# within 24 hours returns the earlier scan (duplicate detection), which would hide what the
+# current code decides.
+CONSUMER="demo-consumer-$RANDOM$RANDOM"
+SECOND_CONSUMER="demo-consumer-$RANDOM$RANDOM"
 
 scan() {  # image, claimed number, latitude, longitude, [token] -> response body
   local auth=()
@@ -163,35 +216,20 @@ poll() {  # scan id, token (or device:ID for a guest) -> the scan's JSON once fi
 
 result() { poll "$1" "$2" | show; }  # scan id, token -> the scan once finished, printed
 
-step "Signing in: consumer (SMS code), pharmacist, manufacturer and regulator (password + MFA)"
-# A new consumer each run: the same photo from the same person within 24 hours returns the
-# earlier scan (duplicate detection), which would hide what the current code decides.
-CONSUMER="$(consumer_login "+234803$(printf '%07d' $((RANDOM * 32768 + RANDOM)) | tail -c 7)")"
-if [[ -n "$REGULATOR" ]]; then
-  echo "staff: reusing the saved sessions (refreshed, no sign-in)"
-else
-  PHARMACIST="$(staff_session pharmacist pharmacy.staff@medlens.test)"
-  MANUFACTURER="$(staff_session manufacturer manufacturer.staff@medlens.test)"
-  REGULATOR="$(staff_session regulator regulator.admin@medlens.test)"
-fi
-# Another consumer for the register-check pack: it looks almost like genuine.jpg, and a
-# near-identical photo from the same person gets the earlier answer.
-SECOND_CONSUMER="$(consumer_login "+234805$(printf '%07d' $((RANDOM * 32768 + RANDOM)) | tail -c 7)")"
-echo "five sessions ready"
-
 step "A genuine pack (Emzor Paracetamol Syrup, declared batch, GS1 DataMatrix)"
-GENUINE="$(scan seed/test_packs/genuine.jpg 04-0289 6.5244 3.3792 "$CONSUMER" | json "d['id']")"
-result "$GENUINE" "$CONSUMER"
+GENUINE="$(DEVICE="$CONSUMER" scan seed/test_packs/genuine.jpg 04-0289 6.5244 3.3792 \
+  | json "d['id']")"
+result "$GENUINE" "device:$CONSUMER"
 
 step "The register check: the same product printed with the wrong strength (250 mg/5 ml)"
 # Registered as 125 mg/5 mL in the NAFDAC Greenbook copy. Read with confidence >= 0.85, the
 # mismatch makes the pack SUSPICIOUS. Consumers see the verdict, one coarse reason
 # (DETAILS_DO_NOT_MATCH_REGISTER) and where the registration data comes from; regulators also
 # see the field-by-field register check, each field's confidence and whether it counted.
-WRONG="$(scan seed/test_packs/strength_mismatch.jpg 04-0289 6.5244 3.3792 "$SECOND_CONSUMER" \
-  | json "d['id']")"
+WRONG="$(DEVICE="$SECOND_CONSUMER" scan seed/test_packs/strength_mismatch.jpg 04-0289 6.5244 \
+  3.3792 | json "d['id']")"
 echo "As the consumer sees it:"
-result "$WRONG" "$SECOND_CONSUMER"
+result "$WRONG" "device:$SECOND_CONSUMER"
 echo "The register check, as the regulator sees it:"
 call "$API/api/v1/scans/$WRONG" -H "Authorization: Bearer $REGULATOR" \
   | json "json.dumps(d['analysis']['register_check'], indent=2)"

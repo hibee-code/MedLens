@@ -215,7 +215,7 @@ def llm(score: Score) -> Reader:
     from medlens.adapters.fakes import MemoryLedger
     from medlens.adapters.llm import GatewayPackReader
     from medlens.ai.gateway.gateway import LLMGateway
-    from medlens.ai.gateway.providers import AnthropicProvider
+    from medlens.ai.gateway.providers import GeminiProvider
     from medlens.core.config import get_settings
     from medlens.modules.verification.pipeline import PackExtraction
 
@@ -223,7 +223,7 @@ def llm(score: Score) -> Reader:
     if not settings.enabled:
         raise RuntimeError("AI is off (MEDLENS_LLM__ENABLED=false)")
     ledger = MemoryLedger()
-    reader = GatewayPackReader(LLMGateway(settings, AnthropicProvider(settings), ledger))
+    reader = GatewayPackReader(LLMGateway(settings, GeminiProvider(settings), ledger))
     fields = ("nafdac_number", "product_name", "batch_number", "expiry_date")
 
     def read(image: bytes) -> tuple[Extraction, str]:

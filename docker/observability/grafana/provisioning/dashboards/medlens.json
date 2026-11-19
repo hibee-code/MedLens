@@ -435,7 +435,7 @@
     {
       "id": 403,
       "type": "timeseries",
-      "title": "Assistant outcomes per minute",
+      "title": "Model fallbacks per minute",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -458,6 +458,38 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
+          "expr": "sum by (route, reason) (rate(medlens_llm_fallbacks_total[5m])) * 60",
+          "legendFormat": "{{route}} {{reason}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 404,
+      "type": "timeseries",
+      "title": "Assistant outcomes per minute",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 35
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "sum by (outcome) (rate(medlens_assistant_requests_total[15m])) * 60",
           "legendFormat": "{{outcome}}",
           "refId": "A"
@@ -473,7 +505,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 35
+        "y": 43
       }
     },
     {
@@ -494,7 +526,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 36
+        "y": 44
       },
       "targets": [
         {
@@ -526,7 +558,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 36
+        "y": 44
       },
       "targets": [
         {
@@ -558,7 +590,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 36
+        "y": 44
       },
       "targets": [
         {
@@ -590,7 +622,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 36
+        "y": 44
       },
       "targets": [
         {

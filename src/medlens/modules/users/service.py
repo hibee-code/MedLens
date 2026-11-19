@@ -40,7 +40,7 @@ class UserService:
     async def profile(self, user_id: UUID) -> tuple[User, list[MembershipView]]:
         async with UnitOfWork(self._sessions) as uow:
             user = await _active_user(uow.session, user_id)
-            return user, await _memberships(uow.session, user_id)
+            return user, await memberships_of(uow.session, user_id)
 
     async def update_profile(
         self, user_id: UUID, changes: dict[str, object], meta: RequestMeta
@@ -56,7 +56,7 @@ class UserService:
                 details={"fields": sorted(changes)},
             )
             await uow.commit()
-            return user, await _memberships(uow.session, user_id)
+            return user, await memberships_of(uow.session, user_id)
 
     async def erase(self, user_id: UUID, meta: RequestMeta) -> None:
         """Remove every piece of personal data. The row stays (status deleted) so scans and audit
@@ -74,6 +74,7 @@ class UserService:
             await detach_user(session, user_id)
             user.set_phone(None)
             user.email = None
+            user.email_verified_at = None
             user.password_hash = None
             user.full_name = None
             user.mfa_secret = None
@@ -94,7 +95,7 @@ async def _active_user(session: AsyncSession, user_id: UUID, *, lock: bool = Fal
     return user
 
 
-async def _memberships(session: AsyncSession, user_id: UUID) -> list[MembershipView]:
+async def memberships_of(session: AsyncSession, user_id: UUID) -> list[MembershipView]:
     rows = await session.execute(
         select(Membership, Organization)
         .join(Organization, Organization.id == Membership.organization_id)

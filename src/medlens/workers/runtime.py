@@ -26,7 +26,7 @@ from medlens.adapters.s3 import create_sync_s3_client
 from medlens.adapters.storage import SyncS3Storage
 from medlens.ai.gateway.gateway import LLMGateway
 from medlens.ai.gateway.ledger import SyncLedger
-from medlens.ai.gateway.providers import AnthropicProvider
+from medlens.ai.gateway.providers import GeminiProvider, require_key
 from medlens.cache.keys import TEXT_MODEL_VERSION_KEY
 from medlens.cache.redis import create_sync_redis_client
 from medlens.core import telemetry
@@ -210,7 +210,8 @@ def build_runtime(settings: Settings) -> WorkerRuntime:
     embedder, text_embedder = models.image, models.text
     if text_embedder is not None:
         _publish_text_model(redis, text_embedder.model_version)
-    gateway = LLMGateway(settings.llm, AnthropicProvider(settings.llm), SyncLedger(sessions, redis))
+    require_key(settings.llm)  # AI on: a key is required, or the worker stops here
+    gateway = LLMGateway(settings.llm, GeminiProvider(settings.llm), SyncLedger(sessions, redis))
     reader = GatewayPackReader(gateway)
     config, scorer = pipeline_config(settings), scorer_for(settings)
 

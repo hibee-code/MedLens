@@ -9,6 +9,7 @@ from medlens.modules.auth.api_keys import ApiKeyService
 from medlens.modules.auth.deps import (
     AuthServiceDep,
     MfaEnrollee,
+    MfaVerifiedUser,
     SessionCheckedUser,
     UserPrincipal,
 )
@@ -18,16 +19,24 @@ from medlens.modules.auth.schemas import (
     ApiKeyCreate,
     ApiKeyCreated,
     ApiKeyRead,
+    EmailCodeSent,
+    EmailOnly,
+    EmailVerify,
     JwksResponse,
     LoginRequest,
     LoginResponse,
     MfaChallengeResponse,
     MfaConfirmRequest,
+    MfaEnabledResponse,
     MfaEnrolment,
     MfaVerifyRequest,
     OtpRequest,
     OtpRequested,
     OtpVerify,
+    PasswordReset,
+    RecoveryCodes,
+    RecoveryCodesLeft,
+    RecoveryCodesRegenerate,
     RefreshRequest,
     SwitchOrganizationRequest,
     TokenResponse,
@@ -132,19 +141,111 @@ async def login(
     return _token_response(result)
 
 
+def login_response(result: SessionTokens | MfaChallenge) -> TokenResponse | MfaChallengeResponse:
+    if isinstance(result, MfaChallenge):
+        return MfaChallengeResponse(
+            status=result.status, mfa_token=result.mfa_token, expires_in=result.expires_in
+        )
+    return _token_response(result)
+
+
+# ------------------------------------------------------------------ e-mail codes and reset
+EMAIL_SENT = "If the address can receive e-mail, a code is on its way."
+
+
+@router.post(
+    "/email-otp/request",
+    response_model=EmailCodeSent,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Send a sign-in code by e-mail",
+    description=(
+        "For consumers who prefer e-mail to SMS: a 6-digit code (valid 15 minutes). The answer "
+        "is the same for every address, and the account is created on first sign-in. Staff "
+        "accounts get no code: they sign in with e-mail, password and an authenticator app."
+    ),
+    responses=problem_responses(422, 429, 503),
+    dependencies=[Depends(limit_logins)],
+)
+async def request_email_otp(
+    body: EmailOnly, auth: AuthServiceDep, meta: RequestMetaDep
+) -> EmailCodeSent:
+    expires_in = await auth.request_email_otp(body.email, meta)
+    return EmailCodeSent(detail=EMAIL_SENT, expires_in=expires_in)
+
+
+@router.post(
+    "/email-otp/verify",
+    response_model=TokenResponse,
+    summary="Sign in with an e-mailed code",
+    description=(
+        "Exchanges the code for a consumer session. Five wrong attempts invalidate the code; "
+        "request a new one. Staff accounts are refused (403)."
+    ),
+    responses=problem_responses(401, 403, 422, 429, 503),
+    dependencies=[Depends(limit_logins)],
+)
+async def verify_email_otp(
+    body: EmailVerify, auth: AuthServiceDep, meta: RequestMetaDep
+) -> TokenResponse:
+    return _token_response(await auth.verify_email_otp(body.email, body.code, meta))
+
+
+@router.post(
+    "/password/forgot",
+    response_model=EmailCodeSent,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Get a password-reset code by e-mail",
+    description=(
+        "E-mails a 6-digit reset code (valid 15 minutes) to an account with this address. The "
+        "answer is the same for any address. Phone accounts that added an e-mail address set "
+        "their first password this way."
+    ),
+    responses=problem_responses(422, 429, 503),
+    dependencies=[Depends(limit_logins)],
+)
+async def forgot_password(
+    body: EmailOnly, auth: AuthServiceDep, meta: RequestMetaDep
+) -> EmailCodeSent:
+    expires_in = await auth.forgot_password(body.email, meta)
+    return EmailCodeSent(detail=EMAIL_SENT, expires_in=expires_in)
+
+
+@router.post(
+    "/password/reset",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Set a new password with the e-mailed code",
+    description=(
+        "Sets the new password (12+ characters, not common, not containing the address) and "
+        "signs the account out everywhere. Five wrong attempts invalidate the code."
+    ),
+    responses=problem_responses(401, 403, 422, 429, 503),
+    dependencies=[Depends(limit_logins)],
+)
+async def reset_password(body: PasswordReset, auth: AuthServiceDep, meta: RequestMetaDep) -> None:
+    await auth.reset_password(body.email, body.code, body.new_password.get_secret_value(), meta)
+
+
 # ------------------------------------------------------------------ MFA
 @router.post(
     "/mfa/verify",
     response_model=TokenResponse,
-    summary="Complete sign-in with an authenticator code",
-    description="Second step of a login that returned `mfa_required`. A code works only once.",
+    summary="Complete sign-in with an authenticator code or a recovery code",
+    description=(
+        "Second step of a login that returned `mfa_required`: `code` from the authenticator "
+        "app, or, when it is lost, `recovery_code` (one of the codes shown when MFA was turned "
+        "on; each works once). Five wrong attempts end the sign-in attempt."
+    ),
     responses=problem_responses(401, 403, 422, 429, 503),
     dependencies=[Depends(limit_logins)],
 )
 async def verify_mfa(
     body: MfaVerifyRequest, auth: AuthServiceDep, meta: RequestMetaDep
 ) -> TokenResponse:
-    return _token_response(await auth.verify_mfa(body.mfa_token, body.code, meta))
+    tokens = await auth.verify_mfa(
+        body.mfa_token, body.code, meta, recovery_code=body.recovery_code
+    )
+    return _token_response(tokens)
 
 
 @router.post(
@@ -166,21 +267,58 @@ async def enrol_mfa(
 
 @router.post(
     "/mfa/confirm",
-    response_model=TokenResponse,
+    response_model=MfaEnabledResponse,
     summary="Turn on MFA with a first authenticator code",
     description=(
         "Confirms the authenticator app and enables MFA. Returns a new session verified with "
-        "MFA (same authentication as /auth/mfa/enrol)."
+        "MFA (same authentication as /auth/mfa/enrol) and ten recovery codes, shown only "
+        "this once: each signs in once without the authenticator (`POST /auth/mfa/verify` "
+        "with `recovery_code`)."
     ),
     responses=problem_responses(401, 409, 422),
 )
 async def confirm_mfa(
     body: MfaConfirmRequest, enrollee: MfaEnrollee, auth: AuthServiceDep, meta: RequestMetaDep
-) -> TokenResponse:
-    tokens = await auth.confirm_mfa(
+) -> MfaEnabledResponse:
+    enabled = await auth.confirm_mfa(
         enrollee.require_user_id(), body.code, enrollee.auth_methods, meta
     )
-    return _token_response(tokens)
+    return MfaEnabledResponse(
+        **_token_response(enabled.tokens).model_dump(), recovery_codes=enabled.recovery_codes
+    )
+
+
+@router.get(
+    "/mfa/recovery-codes",
+    response_model=RecoveryCodesLeft,
+    summary="How many recovery codes are left",
+    description="The number of unused recovery codes (the codes themselves are never shown again).",
+    responses=problem_responses(401, 403),
+)
+async def recovery_codes_left(
+    principal: MfaVerifiedUser, auth: AuthServiceDep
+) -> RecoveryCodesLeft:
+    return RecoveryCodesLeft(remaining=await auth.recovery_codes_left(principal.require_user_id()))
+
+
+@router.post(
+    "/mfa/recovery-codes",
+    response_model=RecoveryCodes,
+    summary="Replace the recovery codes",
+    description=(
+        "Ten new recovery codes, shown once; the earlier ones stop working. Needs a session "
+        "verified with MFA and a current authenticator code."
+    ),
+    responses=problem_responses(401, 403, 409, 422),
+)
+async def regenerate_recovery_codes(
+    body: RecoveryCodesRegenerate,
+    principal: MfaVerifiedUser,
+    auth: AuthServiceDep,
+    meta: RequestMetaDep,
+) -> RecoveryCodes:
+    codes = await auth.regenerate_recovery_codes(principal, body.code, meta)
+    return RecoveryCodes(recovery_codes=codes)
 
 
 # ------------------------------------------------------------------ sessions

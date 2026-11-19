@@ -72,6 +72,49 @@ class OtpStore:
         return OtpResult.INVALID
 
 
+class EmailCodeStore:
+    """One pending code per (purpose, address), stored only as a keyed hash, with an attempt
+    counter: sign-up verification, password reset, adding an address to an account."""
+
+    def __init__(self, redis: Redis, settings: AuthSettings) -> None:
+        self._redis = redis
+        self._ttl = settings.email_code_ttl_seconds
+        self._max_attempts = settings.otp_max_attempts
+
+    @staticmethod
+    def _key(purpose: str, email: str) -> str:
+        return redis_key("email_code", purpose, keyed_digest(email.lower(), purpose="email"))
+
+    @staticmethod
+    def _digest(purpose: str, email: str, code: str) -> str:
+        return keyed_digest(f"{purpose}:{email.lower()}:{code}", purpose="email_code")
+
+    async def issue(self, purpose: str, email: str) -> str:
+        """A new 6-digit code; replaces any pending one (and its attempt count)."""
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        key = self._key(purpose, email)
+        async with self._redis.pipeline(transaction=True) as pipe:
+            pipe.delete(key)
+            pipe.hset(key, mapping={"digest": self._digest(purpose, email, code), "attempts": 0})
+            pipe.expire(key, self._ttl)
+            await pipe.execute()
+        return code
+
+    async def check(self, purpose: str, email: str, code: str) -> OtpResult:
+        key = self._key(purpose, email)
+        stored = await self._redis.hget(key, "digest")
+        if stored is None:
+            return OtpResult.MISSING
+        attempts = await self._redis.hincrby(key, "attempts", 1)
+        if attempts > self._max_attempts:
+            return OtpResult.LOCKED
+        stored_digest = stored.decode() if isinstance(stored, bytes) else stored
+        if constant_time_equal(stored_digest, self._digest(purpose, email, code)):
+            await self._redis.delete(key)
+            return OtpResult.OK
+        return OtpResult.INVALID
+
+
 class LoginLockout:
     """Progressive lockout per account and per client IP.
 

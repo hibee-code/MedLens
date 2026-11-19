@@ -108,7 +108,7 @@ class FakeLLMProvider:
     output text, a ``ProviderResponse``, or an exception to raise."""
 
     script: list[object] = field(default_factory=list)
-    model: str = "claude-haiku-5-5"
+    model: str = "gemini-3.5-flash-lite"
     usage: TokenUsage = FAKE_USAGE
     requests: list[ProviderRequest] = field(default_factory=list)
 
@@ -119,7 +119,7 @@ class FakeLLMProvider:
             raise entry
         if isinstance(entry, ProviderResponse):
             return entry
-        return ProviderResponse(str(entry), request.model, self.usage, "end_turn")
+        return ProviderResponse(str(entry), request.model, self.usage, "STOP")
 
 
 @dataclass

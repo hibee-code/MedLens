@@ -11,7 +11,7 @@ INFRA := postgres pgbouncer redis minio
 
 .PHONY: help dev-secrets env install install-ml dev test test-unit test-integration lint format typecheck check \
 	openapi migrate seed embeddings greenbook-import-snapshot up infra down logs eval demo test-packs \
-	audit ci dashboard onnx test-models retrieval-eval ocr-benchmark load-test greenbook-add-rows demo-reset eval-image
+	audit ci dashboard onnx test-models retrieval-eval ocr-benchmark load-test greenbook-add-rows demo-reset eval-image bootstrap-admin
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_.-]+:.*## ' $(MAKEFILE_LIST) | \
@@ -83,15 +83,19 @@ openapi: ## Regenerate the committed openapi.json after API changes
 migrate: .env ## Apply database migrations (alembic upgrade head)
 	$(UV) run alembic upgrade head
 
-seed: .env ## Load development seed data (idempotent). Staff logins: SEED_ARGS="--staff-password ..."
+seed: .env ## Load development seed data (idempotent; no users: see bootstrap-admin)
 	$(UV) run python -m medlens.seed $(SEED_ARGS)
 
 embeddings: .env ## Queue embeddings for reference images and document chunks that have none (workers must run)
 	$(UV) run celery -A medlens.queue.celery_app:celery_app call medlens.reference_images.backfill
 	$(UV) run celery -A medlens.queue.celery_app:celery_app call medlens.knowledge.backfill_embeddings
 
-demo-reset: .env ## Local only: report the demo's scans, cases, hotspot snapshots and queued events; delete with CONFIRM=1
-	$(UV) run python -m medlens.seed.demo_reset $(if $(filter 1,$(CONFIRM)),--confirm)
+bootstrap-admin: .env ## Invite the first platform admin: EMAIL=... (refused once one exists; token printed locally only)
+	@test -n "$(EMAIL)" || { echo "usage: make bootstrap-admin EMAIL=you@example.ng"; exit 2; }
+	$(UV) run python -m medlens.cli.bootstrap_admin --email "$(EMAIL)"
+
+demo-reset: .env ## Local only: report the demo's scans, cases, hotspot snapshots and queued events; delete with CONFIRM=1 (ACCOUNTS=1: also erase the demo accounts)
+	$(UV) run python -m medlens.seed.demo_reset $(if $(filter 1,$(CONFIRM)),--confirm) $(if $(filter 1,$(ACCOUNTS)),--accounts)
 
 greenbook-add-rows: .env ## Hand-typed register rows: report (FILE=seed/greenbook_manual.csv), apply with CONFIRM=1
 	$(UV) run python -m medlens.seed.register_import $(or $(FILE),seed/greenbook_manual.csv) $(if $(filter 1,$(CONFIRM)),--confirm)

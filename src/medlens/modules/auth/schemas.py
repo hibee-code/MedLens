@@ -2,12 +2,22 @@ from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, SecretStr, StringConstraints, field_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    JsonValue,
+    SecretStr,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
 from medlens.core.schemas import EmailAddress, InputModel, NonEmptyStr, PhoneNumberNG, ReadModel
 from medlens.modules.rbac.permissions import Permission
 
 OtpCode = Annotated[str, StringConstraints(pattern=r"^\d{6}$")]
+RecoveryCode = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9 -]{10,16}$")]
+_RECOVERY_EXAMPLE: list[JsonValue] = ["k7m2p-x9qrt", "a3fh8-n2wd5"]
 Email = EmailAddress
 Password = Annotated[SecretStr, Field(min_length=1, max_length=256)]
 
@@ -85,6 +95,52 @@ class TokenResponse(ReadModel):
     organization_id: UUID | None = Field(description="Active organization of the session.")
 
 
+class MfaEnabledResponse(TokenResponse):
+    """MFA is on: a session, and the recovery codes, shown this once."""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "status": "authenticated",
+                    "access_token": _EXAMPLE_ACCESS,
+                    "token_type": "Bearer",
+                    "expires_in": 900,
+                    "refresh_token": "<refresh token>",
+                    "refresh_expires_in": 2592000,
+                    "organization_id": _EXAMPLE_ORG,
+                    "recovery_codes": _RECOVERY_EXAMPLE,
+                }
+            ]
+        }
+    )
+
+    recovery_codes: list[str] = Field(
+        description="Ten one-time codes for signing in without the authenticator. Shown once: "
+        "the user must store them safely."
+    )
+
+
+class RecoveryCodesRegenerate(InputModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"code": "123456"}]})
+
+    code: OtpCode = Field(description="A current authenticator code, proving the device.")
+
+
+class RecoveryCodes(ReadModel):
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"recovery_codes": _RECOVERY_EXAMPLE}]}
+    )
+
+    recovery_codes: list[str] = Field(description="Shown once; the earlier codes stopped working.")
+
+
+class RecoveryCodesLeft(ReadModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"remaining": 9}]})
+
+    remaining: int = Field(description="Unused recovery codes. Regenerate them when few are left.")
+
+
 class MfaChallengeResponse(ReadModel):
     """Password accepted; a second factor is needed. ``mfa_required``: call /auth/mfa/verify.
     ``mfa_enrolment_required``: this role must use MFA; set it up with /auth/mfa/enrol and
@@ -108,11 +164,27 @@ LoginResponse = Annotated[TokenResponse | MfaChallengeResponse, Field(discrimina
 
 class MfaVerifyRequest(InputModel):
     model_config = ConfigDict(
-        json_schema_extra={"examples": [{"mfa_token": _EXAMPLE_ACCESS, "code": "123456"}]}
+        json_schema_extra={
+            "examples": [
+                {"mfa_token": _EXAMPLE_ACCESS, "code": "123456"},
+                {"mfa_token": _EXAMPLE_ACCESS, "recovery_code": "k7m2p-x9qrt"},
+            ]
+        }
     )
 
     mfa_token: str = Field(max_length=4096)
-    code: OtpCode
+    code: OtpCode | None = Field(default=None, description="The authenticator app's code.")
+    recovery_code: RecoveryCode | None = Field(
+        default=None,
+        description="Instead of `code` when the authenticator is lost: one of the recovery "
+        "codes shown when MFA was turned on. Each works once.",
+    )
+
+    @model_validator(mode="after")
+    def _one_factor(self) -> "MfaVerifyRequest":
+        if (self.code is None) == (self.recovery_code is None):
+            raise ValueError("send exactly one of code and recovery_code")
+        return self
 
 
 class MfaEnrolment(ReadModel):
@@ -279,3 +351,73 @@ class ApiKeyCreated(ApiKeyRead):
     )
 
     key: str = Field(description="The full key. Shown only once: store it securely now.")
+
+
+# ------------------------------------------------------------------ e-mail sign-up and reset
+class EmailSignup(InputModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "email": "pharmacist@example.com",
+                    "password": "••••••••••••••",
+                    "full_name": "Amina Bello",
+                }
+            ]
+        }
+    )
+
+    email: Email
+    password: Password
+    full_name: Annotated[str, StringConstraints(strip_whitespace=True, max_length=200)] | None = (
+        None
+    )
+
+
+class EmailCodeSent(ReadModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "detail": "If the address can receive e-mail, a code is on its way.",
+                    "expires_in": 900,
+                }
+            ]
+        }
+    )
+
+    detail: str
+    expires_in: int = Field(description="Seconds the code stays valid.")
+
+
+class EmailVerify(InputModel):
+    model_config = ConfigDict(
+        json_schema_extra={"examples": [{"email": "pharmacist@example.com", "code": "123456"}]}
+    )
+
+    email: Email
+    code: OtpCode
+
+
+class EmailOnly(InputModel):
+    model_config = ConfigDict(json_schema_extra={"examples": [{"email": "pharmacist@example.com"}]})
+
+    email: Email
+
+
+class PasswordReset(InputModel):
+    model_config = ConfigDict(
+        json_schema_extra={
+            "examples": [
+                {
+                    "email": "pharmacist@example.com",
+                    "code": "123456",
+                    "new_password": "••••••••••••••",
+                }
+            ]
+        }
+    )
+
+    email: Email
+    code: OtpCode
+    new_password: Password

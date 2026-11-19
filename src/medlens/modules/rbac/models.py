@@ -28,6 +28,11 @@ class RoleName(StrEnum):
     PLATFORM_ADMIN = "platform_admin"
 
 
+# Global roles of people who sign themselves up (passwordless codes, no MFA); every other
+# role makes a staff account (decision log, "Accounts: consumers sign themselves up, staff are
+# invited").
+PUBLIC_ROLES = frozenset({RoleName.CONSUMER.value, RoleName.HEALTH_WORKER.value})
+
 # Reference rows inserted by the migration that creates the table.
 ROLE_DEFINITIONS: dict[RoleName, tuple[RoleScope, str]] = {
     RoleName.CONSUMER: (RoleScope.GLOBAL, "Member of the public verifying a pack."),

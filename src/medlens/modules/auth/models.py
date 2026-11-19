@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from sqlalchemy import ARRAY, ForeignKey, Index, String, Text, text
+from sqlalchemy import ARRAY, ForeignKey, Index, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from medlens.db.base import Base, CreatedAt, Entity, UUIDv7PrimaryKey
@@ -36,6 +36,18 @@ class RefreshToken(UUIDv7PrimaryKey, CreatedAt, Base):
     amr: Mapped[list[str]] = mapped_column(
         ARRAY(String(16)), default=list, server_default=text("'{}'")
     )
+
+
+class MfaRecoveryCode(UUIDv7PrimaryKey, CreatedAt, Base):
+    """One-time code that stands in for the authenticator app (a lost phone). Ten are issued
+    when MFA is turned on or the codes are regenerated; only their hashes are stored."""
+
+    __tablename__ = "mfa_recovery_codes"
+    __table_args__ = (UniqueConstraint("user_id", "code_hash"),)
+
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    code_hash: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime | None]
 
 
 class ApiKey(Entity):

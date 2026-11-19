@@ -30,7 +30,7 @@ class LLMCall(UUIDv7PrimaryKey, CreatedAt, Base):
     route: Mapped[str] = mapped_column(String(64))
     tier: Mapped[str] = mapped_column(String(16))
     requested_model: Mapped[str] = mapped_column(String(100))
-    model: Mapped[str] = mapped_column(String(100))  # the model that served (refusal fallback)
+    model: Mapped[str] = mapped_column(String(100))  # the model that answered (a fallback, maybe)
     prompt_version: Mapped[str] = mapped_column(String(64))
     input_tokens: Mapped[int]
     output_tokens: Mapped[int]

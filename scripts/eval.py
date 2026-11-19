@@ -7,13 +7,13 @@ seed/documents as the catalog; OpenCV and zxing-cpp read the photos, Tesseract t
 installed (the worker image has it: without it the register fields are never read). The
 register-check and cloned-barcode scoring follow MEDLENS_VERIFICATION__* unless
 --register-check-scoring / --barcode-check-scoring say otherwise; the report lists each pack's
-verdict and the signals that raised it. The vision LLM is Claude through the gateway when
-ANTHROPIC_API_KEY is set, otherwise a stand-in that reads each pack's printed fields from the
-CSV (so without a key the eval measures the readers and the scorer, not the model).
+verdict and the signals that raised it. The vision LLM is Gemini through the gateway when
+GEMINI_API_KEY (or GOOGLE_API_KEY) is set, otherwise a stand-in that reads each pack's printed
+fields from the CSV (so without a key the eval measures the readers and the scorer, not the model).
 
 Assistant: the questions in seed/eval_questions.csv run against the knowledge base in the
 configured database (``make up`` then ``make seed``), skipped if there is none. With
-ANTHROPIC_API_KEY the balanced model answers; otherwise a stand-in cites the top result, which
+GEMINI_API_KEY the balanced model answers; otherwise a stand-in cites the top result, which
 measures retrieval and abstention only.
 
 Prints accuracy per expected verdict, the share of scans that needed the LLM, mean latency,
@@ -48,8 +48,8 @@ from medlens.adapters.llm import GatewayPackReader
 from medlens.ai.gateway.gateway import AsyncLLMGateway, LLMGateway
 from medlens.ai.gateway.pricing import TokenUsage
 from medlens.ai.gateway.providers import (
-    AnthropicProvider,
-    AsyncAnthropicProvider,
+    AsyncGeminiProvider,
+    GeminiProvider,
     ProviderRequest,
     ProviderResponse,
 )
@@ -210,7 +210,7 @@ def evaluate_scans(
     ledger = MemoryLedger()
     if live:
         settings = LLMSettings(enabled=True)
-        llm: Any = GatewayPackReader(LLMGateway(settings, AnthropicProvider(settings), ledger))
+        llm: Any = GatewayPackReader(LLMGateway(settings, GeminiProvider(settings), ledger))
     else:
         llm = FakeLLM({image_key(images[row["file"]]): stand_in_reading(row) for row in rows})
     analyzer, barcode, ocr = readers(ocr_mode)
@@ -270,8 +270,10 @@ class CiteTopResult:
     """Stand-in model without an API key: cites the first sentence of the top document."""
 
     async def complete(self, request: ProviderRequest) -> ProviderResponse:
-        blocks = request.messages[0]["content"]
-        documents = [b["text"] for b in blocks if b["text"].startswith("<untrusted_document")]
+        blocks = request.messages[0]["parts"]
+        documents = [
+            b["text"] for b in blocks if b.get("text", "").startswith("<untrusted_document")
+        ]
         first = documents[0]
         chunk_id = first.split('id="', 1)[1].split('"', 1)[0]
         body = first.split(">", 1)[1].strip().splitlines()[0][:200]
@@ -280,7 +282,7 @@ class CiteTopResult:
             "citations": [{"chunk_id": chunk_id, "quote": body}],
             "insufficient_evidence": False,
         }
-        return ProviderResponse(json.dumps(answer), request.model, TokenUsage(), "end_turn")
+        return ProviderResponse(json.dumps(answer), request.model, TokenUsage(), "STOP")
 
 
 class LocalQueryEmbedder:
@@ -341,7 +343,7 @@ async def evaluate_assistant(
     sessions = create_session_factory(engine)
     ledger = AsyncMemoryLedger()
     llm_settings = LLMSettings(enabled=True)
-    provider: Any = AsyncAnthropicProvider(llm_settings) if live else CiteTopResult()
+    provider: Any = AsyncGeminiProvider(llm_settings) if live else CiteTopResult()
     gateway = AsyncLLMGateway(llm_settings, provider, ledger)
     query_embedder, reranker = local_retrieval_models(settings)
     knowledge = KnowledgeService(
@@ -412,7 +414,7 @@ def main() -> int:
         help="CSV: question, expected_document, answerable (default seed/eval_questions.csv)",
     )
     args = parser.parse_args()
-    live = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    live = bool(os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"))
     verification = VerificationSettings()
     if not args.skip_scans:
         from medlens.core.config import SettingsError, get_settings
@@ -446,7 +448,7 @@ def main() -> int:
         else asyncio.run(evaluate_assistant(live, args.questions))
     )
     report = {
-        "models": "live (ANTHROPIC_API_KEY)" if live else "stand-ins (no API key)",
+        "models": "live (GEMINI_API_KEY)" if live else "stand-ins (no API key)",
         "scans": scans,
         "assistant": assistant,
         "total_cost_usd": str(scan_cost + assistant_cost),

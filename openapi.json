@@ -480,13 +480,462 @@
         }
       }
     },
+    "/api/v1/auth/email-otp/request": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Send a sign-in code by e-mail",
+        "description": "For consumers who prefer e-mail to SMS: a 6-digit code (valid 15 minutes). The answer is the same for every address, and the account is created on first sign-in. Staff accounts get no code: they sign in with e-mail, password and an authenticator app.",
+        "operationId": "auth-request_email_otp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailOnly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailCodeSent"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/email-otp/verify": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Sign in with an e-mailed code",
+        "description": "Exchanges the code for a consumer session. Five wrong attempts invalidate the code; request a new one. Staff accounts are refused (403).",
+        "operationId": "auth-verify_email_otp",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailVerify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password/forgot": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Get a password-reset code by e-mail",
+        "description": "E-mails a 6-digit reset code (valid 15 minutes) to an account with this address. The answer is the same for any address. Phone accounts that added an e-mail address set their first password this way.",
+        "operationId": "auth-forgot_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailOnly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailCodeSent"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/password/reset": {
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Set a new password with the e-mailed code",
+        "description": "Sets the new password (12+ characters, not common, not containing the address) and signs the account out everywhere. Five wrong attempts invalidate the code.",
+        "operationId": "auth-reset_password",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordReset"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/mfa/verify": {
       "post": {
         "tags": [
           "auth"
         ],
-        "summary": "Complete sign-in with an authenticator code",
-        "description": "Second step of a login that returned `mfa_required`. A code works only once.",
+        "summary": "Complete sign-in with an authenticator code or a recovery code",
+        "description": "Second step of a login that returned `mfa_required`: `code` from the authenticator app, or, when it is lost, `recovery_code` (one of the codes shown when MFA was turned on; each works once). Five wrong attempts end the sign-in attempt.",
         "operationId": "auth-verify_mfa",
         "requestBody": {
           "content": {
@@ -681,7 +1130,7 @@
           "auth"
         ],
         "summary": "Turn on MFA with a first authenticator code",
-        "description": "Confirms the authenticator app and enables MFA. Returns a new session verified with MFA (same authentication as /auth/mfa/enrol).",
+        "description": "Confirms the authenticator app and enables MFA. Returns a new session verified with MFA (same authentication as /auth/mfa/enrol) and ten recovery codes, shown only this once: each signs in once without the authenticator (`POST /auth/mfa/verify` with `recovery_code`).",
         "operationId": "auth-confirm_mfa",
         "requestBody": {
           "content": {
@@ -699,7 +1148,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TokenResponse"
+                  "$ref": "#/components/schemas/MfaEnabledResponse"
                 }
               }
             }
@@ -772,6 +1221,192 @@
         "security": [
           {
             "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/auth/mfa/recovery-codes": {
+      "get": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "How many recovery codes are left",
+        "description": "The number of unused recovery codes (the codes themselves are never shown again).",
+        "operationId": "auth-recovery_codes_left",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodesLeft"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "auth"
+        ],
+        "summary": "Replace the recovery codes",
+        "description": "Ten new recovery codes, shown once; the earlier ones stop working. Needs a session verified with MFA and a current authenticator code.",
+        "operationId": "auth-regenerate_recovery_codes",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCodesRegenerate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RecoveryCodes"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
           }
         ]
       }
@@ -1769,6 +2404,304 @@
         ]
       }
     },
+    "/api/v1/users/me/email": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Add an e-mail address to your account",
+        "description": "E-mails a 6-digit code (valid 15 minutes) to the address; confirm it with `POST /users/me/email/verify`. An address another account uses gets no code (same answer). With a verified address you can set a password (`POST /auth/password/forgot`) and accept invitations sent to it.",
+        "operationId": "users-add_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailOnly"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailCodeSent"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/users/me/email/verify": {
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Confirm the e-mail address with its code",
+        "description": "Sets the verified address on your account. Five wrong attempts invalidate the code.",
+        "operationId": "users-verify_added_email",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailVerify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/organizations/{organization_id}/members": {
       "get": {
         "tags": [
@@ -2231,13 +3164,285 @@
         }
       }
     },
+    "/api/v1/organizations/register": {
+      "post": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Register your organization (public sign-up form)",
+        "description": "For pharmacies, PPMVs, clinics, manufacturers and distributors: the organization, its licence number and its first administrator, who gets a 6-digit code by e-mail (valid 15 minutes) to verify the address with `POST /organizations/register/verify`. The organization starts as `pending_verification` and grants nothing until a platform admin checks the licence and verifies it. An address that already has an account gets no new account (the same answer). Rate-limited. Regulators are created by platform admins.",
+        "operationId": "organizations-register_organization",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OrganizationRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EmailCodeSent"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/organizations/register/verify": {
+      "post": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Verify the administrator's e-mail address",
+        "description": "Proves the address with the e-mailed code. The answer is an MFA enrolment challenge (`mfa_enrolment_required`): every staff account sets up an authenticator app before its first session. Five wrong attempts invalidate the code.",
+        "operationId": "organizations-verify_registration",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EmailVerify"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TokenResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MfaChallengeResponse"
+                    }
+                  ],
+                  "title": "Response Organizations-Verify Registration",
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "authenticated": "#/components/schemas/TokenResponse",
+                      "mfa_required": "#/components/schemas/MfaChallengeResponse",
+                      "mfa_enrolment_required": "#/components/schemas/MfaChallengeResponse"
+                    }
+                  }
+                },
+                "examples": {
+                  "mfa_enrolment_required": {
+                    "summary": "Verified: set up MFA next",
+                    "value": {
+                      "expires_in": 300,
+                      "mfa_token": "<access token (JWT)>",
+                      "status": "mfa_required"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/organizations": {
       "post": {
         "tags": [
           "organizations"
         ],
-        "summary": "Register an organization",
-        "description": "Registers a pharmacy, PPMV, clinic, distributor or manufacturer; you become its administrator. It starts as `pending_verification`: memberships grant nothing until a platform admin verifies it. Regulators are created by platform admins only.",
+        "summary": "Create an organization (platform admins)",
+        "description": "Platform admins create organizations directly (regulators only this way), then invite their administrators. Everyone else registers with `POST /organizations/register`. Access tokens issued before your roles last changed are refused.",
         "operationId": "organizations-create_organization",
         "security": [
           {
@@ -2925,8 +4130,8 @@
         "tags": [
           "organizations"
         ],
-        "summary": "Invite someone by phone number or e-mail address",
-        "description": "Returns a token once; MedLens does not send it. The invitee accepts it with `POST /api/v1/invitations/accept` while signed in with that phone number or e-mail address. Invitations expire after 7 days; a new one replaces any open invitation for the same person. The role must suit the organization and carry no permission you lack.",
+        "summary": "Invite someone by e-mail",
+        "description": "E-mails the invitation (a link when MEDLENS_APP__FRONTEND_URL is set, else the code) and returns its token once. A new person creates an account from it with `POST /api/v1/invitations/{token}/accept-new`; someone with an account accepts it with `POST /api/v1/invitations/accept`, signed in with that verified address. Invitations expire after 7 days; a new one replaces any open invitation for the same address. The role must suit the organization and carry no permission you lack. Platform admins are invited with `POST /api/v1/admin/invitations`.",
         "operationId": "organizations-create_invitation",
         "security": [
           {
@@ -3912,13 +5117,301 @@
         }
       }
     },
+    "/api/v1/invitations/{token}": {
+      "get": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Look at an invitation",
+        "description": "For the invitation's landing page (the e-mailed link): the organization, the role, the masked address and whether that address already has an account. With an account, sign in and use `POST /invitations/accept`; without one, `POST /invitations/{token}/accept-new`. Unknown, used, revoked and expired invitations answer 404. Rate-limited.",
+        "operationId": "organizations-preview_invitation",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128,
+              "title": "Token"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationPreview"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/invitations/{token}/accept-new": {
+      "post": {
+        "tags": [
+          "organizations"
+        ],
+        "summary": "Create your account from an invitation",
+        "description": "For a person without a MedLens account: creates it with the invited address (receiving the invitation proves it), your name and a password, and joins the organization with the invited role (or becomes a platform admin). The answer is an MFA enrolment challenge (`mfa_enrolment_required`): every staff account sets up an authenticator app before its first session. An address that already has an account answers 409: sign in and use `POST /invitations/accept`. Rate-limited.",
+        "operationId": "organizations-accept_invitation_new_account",
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 16,
+              "maxLength": 128,
+              "title": "Token"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationAcceptNew"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TokenResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MfaChallengeResponse"
+                    }
+                  ],
+                  "discriminator": {
+                    "propertyName": "status",
+                    "mapping": {
+                      "authenticated": "#/components/schemas/TokenResponse",
+                      "mfa_required": "#/components/schemas/MfaChallengeResponse",
+                      "mfa_enrolment_required": "#/components/schemas/MfaChallengeResponse"
+                    }
+                  },
+                  "title": "Response Organizations-Accept Invitation New Account"
+                },
+                "examples": {
+                  "mfa_enrolment_required": {
+                    "summary": "Account created: set up MFA next",
+                    "value": {
+                      "expires_in": 300,
+                      "mfa_token": "<access token (JWT)>",
+                      "status": "mfa_required"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded; retry after the `Retry-After` header.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:rate-limited",
+                  "title": "Too many requests",
+                  "status": 429,
+                  "detail": "Rate limit exceeded; retry after the `Retry-After` header.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is temporarily unavailable; retry later.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:dependency-unavailable",
+                  "title": "Service temporarily unavailable",
+                  "status": 503,
+                  "detail": "A dependency is temporarily unavailable; retry later.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/invitations/accept": {
       "post": {
         "tags": [
           "organizations"
         ],
-        "summary": "Accept an invitation",
-        "description": "Joins the organization with the invited role. You must be signed in with the phone number or e-mail address the invitation was sent to; unknown, expired, used and other people's invitations all answer 404.",
+        "summary": "Accept an invitation with your account",
+        "description": "Joins the organization with the invited role (or makes you a platform admin). You must be signed in with the verified e-mail address the invitation was sent to; unknown, expired, used and other people's invitations all answer 404. An account without a password sets one here (`password`). An account that becomes a staff account here is signed out everywhere (`signed_out: true`): staff sign in with e-mail, password and an authenticator app, which it sets up on its next sign-in.",
         "operationId": "organizations-accept_invitation",
         "requestBody": {
           "content": {
@@ -3936,7 +5429,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/MemberRead"
+                  "$ref": "#/components/schemas/InvitationAccepted"
                 }
               }
             }
@@ -4050,6 +5543,372 @@
             "apiKeyAuth": []
           }
         ]
+      }
+    },
+    "/api/v1/admin/invitations": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Invite a platform admin",
+        "description": "E-mails an invitation to become a platform admin and returns its token once. The invitee creates an account from it (`POST /invitations/{token}/accept-new`) or, with an account, accepts it signed in. A new invitation replaces an open one for the same address. Access tokens issued before your roles last changed are refused.",
+        "operationId": "admin-create_platform_invitation",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PlatformInvitationCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InvitationCreated"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "List platform-admin invitations",
+        "description": "Every platform-admin invitation with its status, newest first; masked.",
+        "operationId": "admin-list_platform_invitations",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Items per page (1-100).",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Items per page (1-100)."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque `next_cursor` from the previous page. Omit for the first page.",
+              "title": "Cursor"
+            },
+            "description": "Opaque `next_cursor` from the previous page. Omit for the first page."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_InvitationRead_"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/invitations/{invitation_id}": {
+      "delete": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Revoke a platform-admin invitation",
+        "description": "The token stops working immediately.",
+        "operationId": "admin-revoke_platform_invitation",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "invitation_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "Invitation Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/products": {
@@ -9680,6 +11539,934 @@
         }
       }
     },
+    "/api/v1/admin/users": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Find accounts",
+        "description": "Newest first. `q` matches part of an e-mail address or name, or a whole Nigerian phone number in any format. Erased accounts are not listed. Platform admins, signed in with MFA.",
+        "operationId": "admin-list_users",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "minLength": 2,
+                  "maxLength": 100
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Q"
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/UserStatus"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "name": "global_role",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RoleName"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Global Role"
+            }
+          },
+          {
+            "name": "organization_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Organization Id"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "description": "Items per page (1-100).",
+              "default": 20,
+              "title": "Limit"
+            },
+            "description": "Items per page (1-100)."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "maxLength": 200
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Opaque `next_cursor` from the previous page. Omit for the first page.",
+              "title": "Cursor"
+            },
+            "description": "Opaque `next_cursor` from the previous page. Omit for the first page."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_AdminUserRead_"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}": {
+      "get": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "One account",
+        "description": "The account with its memberships; erased accounts answer 404.",
+        "operationId": "admin-read_user",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                },
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}/suspend": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Suspend an account",
+        "description": "Ends every session and blocks sign-in until reactivated; open access tokens stop working on their next request. The last active platform admin cannot be suspended. Audited with the reason. Not for your own account (409).",
+        "operationId": "admin-admin_suspend_user",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminAccountAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}/reactivate": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Reactivate an account",
+        "description": "Allows sign-in again. Earlier sessions stay ended. Audited with the reason. Not for your own account (409).",
+        "operationId": "admin-admin_reactivate_user",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminAccountAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}/sign-out": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Sign an account out everywhere",
+        "description": "Ends every session (a lost or stolen device); the account signs in again as usual. Audited with the reason. Not for your own account (409).",
+        "operationId": "admin-admin_sign_out_user",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminAccountAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/users/{user_id}/mfa/reset": {
+      "post": {
+        "tags": [
+          "admin"
+        ],
+        "summary": "Reset an account's MFA",
+        "description": "For a lost authenticator without recovery codes, after checking who is asking: removes the authenticator and the recovery codes and ends every session. Staff set up MFA again at their next sign-in. Audited with the reason. Not for your own account (409).",
+        "operationId": "admin-admin_reset_mfa_user",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "apiKeyAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "title": "User Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminAccountAction"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserRead"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired or invalid credentials.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:unauthorized",
+                  "title": "Authentication required",
+                  "status": 401,
+                  "detail": "Missing, expired or invalid credentials.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Authenticated, but not allowed to do this.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:forbidden",
+                  "title": "Forbidden",
+                  "status": 403,
+                  "detail": "Authenticated, but not allowed to do this.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The resource does not exist or is not visible to the caller.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:not-found",
+                  "title": "Resource not found",
+                  "status": 404,
+                  "detail": "The resource does not exist or is not visible to the caller.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The request conflicts with the current state of the resource.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:conflict",
+                  "title": "Conflict with the current state of the resource",
+                  "status": 409,
+                  "detail": "The request conflicts with the current state of the resource.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "One or more fields are invalid; see `errors`.",
+            "content": {
+              "application/problem+json": {
+                "example": {
+                  "type": "urn:medlens:problem:validation-failed",
+                  "title": "Validation failed",
+                  "status": 422,
+                  "detail": "One or more fields are invalid; see `errors`.",
+                  "instance": "/api/v1/scans/0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                  "request_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e13",
+                  "errors": [
+                    {
+                      "loc": [
+                        "query",
+                        "limit"
+                      ],
+                      "msg": "Input should be less than or equal to 100",
+                      "type": "less_than_equal"
+                    }
+                  ]
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/admin/ai/usage": {
       "get": {
         "tags": [
@@ -10314,8 +13101,8 @@
               }
             ],
             "models": {
-              "balanced": "claude-sonnet-5-5",
-              "fast": "claude-haiku-5-5"
+              "balanced": "gemini-3.8-flash",
+              "fast": "gemini-3.5-flash-lite"
             },
             "since": "2026-10-28T00:00:00Z",
             "until": "2026-11-04T00:00:00Z"
@@ -10470,6 +13257,154 @@
             "recall": 0.9259,
             "since": "2025-11-04T09:00:00Z",
             "until": "2026-11-04T09:00:00Z"
+          }
+        ]
+      },
+      "AdminAccountAction": {
+        "properties": {
+          "reason": {
+            "type": "string",
+            "maxLength": 500,
+            "minLength": 3,
+            "title": "Reason",
+            "description": "Why, for the audit log. No health data or contact details.",
+            "examples": [
+              "Seal was broken and the print looked faded."
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "title": "AdminAccountAction",
+        "examples": [
+          {
+            "reason": "Reported lost phone; identity checked by call."
+          }
+        ]
+      },
+      "AdminUserRead": {
+        "properties": {
+          "id": {
+            "type": "string",
+            "format": "uuid",
+            "title": "Id"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "email_verified": {
+            "type": "boolean",
+            "title": "Email Verified",
+            "description": "The address was proven with a code sent to it.",
+            "default": false
+          },
+          "phone": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Phone",
+            "description": "E.164, masked."
+          },
+          "full_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Full Name"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "global_role": {
+            "type": "string",
+            "title": "Global Role"
+          },
+          "mfa_enabled": {
+            "type": "boolean",
+            "title": "Mfa Enabled"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "memberships": {
+            "items": {
+              "$ref": "#/components/schemas/MembershipSummary"
+            },
+            "type": "array",
+            "title": "Memberships"
+          },
+          "last_login_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Login At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "phone",
+          "full_name",
+          "status",
+          "global_role",
+          "mfa_enabled",
+          "created_at",
+          "memberships",
+          "last_login_at"
+        ],
+        "title": "AdminUserRead",
+        "description": "An account as platform admins see it: the phone number masked.",
+        "examples": [
+          {
+            "created_at": "2026-11-03T09:00:00Z",
+            "email": "pharmacist@example.ng",
+            "email_verified": true,
+            "full_name": "Amina Bello",
+            "global_role": "consumer",
+            "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e30",
+            "last_login_at": "2026-11-18T08:12:00Z",
+            "memberships": [
+              {
+                "organization_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+                "organization_name": "Lekki Community Pharmacy",
+                "organization_type": "pharmacy",
+                "role": "pharmacy_admin",
+                "status": "active"
+              }
+            ],
+            "mfa_enabled": true,
+            "phone": "+234803*****67",
+            "status": "active"
           }
         ]
       },
@@ -12471,6 +15406,80 @@
           }
         ]
       },
+      "EmailCodeSent": {
+        "properties": {
+          "detail": {
+            "type": "string",
+            "title": "Detail"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In",
+            "description": "Seconds the code stays valid."
+          }
+        },
+        "type": "object",
+        "required": [
+          "detail",
+          "expires_in"
+        ],
+        "title": "EmailCodeSent",
+        "examples": [
+          {
+            "detail": "If the address can receive e-mail, a code is on its way.",
+            "expires_in": 900
+          }
+        ]
+      },
+      "EmailOnly": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
+            "title": "Email"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "EmailOnly",
+        "examples": [
+          {
+            "email": "pharmacist@example.com"
+          }
+        ]
+      },
+      "EmailVerify": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
+            "title": "Email"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "code"
+        ],
+        "title": "EmailVerify",
+        "examples": [
+          {
+            "code": "123456",
+            "email": "pharmacist@example.com"
+          }
+        ]
+      },
       "FailedTaskRead": {
         "properties": {
           "id": {
@@ -12620,6 +15629,40 @@
         ],
         "title": "FieldError",
         "description": "One invalid field. Never echoes the rejected value."
+      },
+      "FounderAccount": {
+        "properties": {
+          "full_name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Full Name"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
+            "title": "Email"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "format": "password",
+            "title": "Password",
+            "description": "12+ characters, not a common password, not containing the address.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "full_name",
+          "email",
+          "password"
+        ],
+        "title": "FounderAccount",
+        "description": "The organization's first administrator, who registers it."
       },
       "GlobalRoleAssignment": {
         "properties": {
@@ -12911,6 +15954,22 @@
             "maxLength": 128,
             "minLength": 16,
             "title": "Token"
+          },
+          "password": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 256,
+                "minLength": 1,
+                "format": "password",
+                "writeOnly": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Password",
+            "description": "Required when your account has no password yet (it signed in with codes): staff sign in with e-mail, password and an authenticator app."
           }
         },
         "additionalProperties": false,
@@ -12925,36 +15984,86 @@
           }
         ]
       },
+      "InvitationAcceptNew": {
+        "properties": {
+          "full_name": {
+            "type": "string",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Full Name"
+          },
+          "password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "format": "password",
+            "title": "Password",
+            "description": "12+ characters, not a common password, not containing the address.",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "full_name",
+          "password"
+        ],
+        "title": "InvitationAcceptNew",
+        "description": "A new person: the account is created from the invitation (receiving it proves the\naddress).",
+        "examples": [
+          {
+            "full_name": "Amina Bello",
+            "password": "••••••••••••••"
+          }
+        ]
+      },
+      "InvitationAccepted": {
+        "properties": {
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id",
+            "description": "None: you are now a platform admin."
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "signed_out": {
+            "type": "boolean",
+            "title": "Signed Out",
+            "description": "True when the account just became a staff account: its sessions ended, and it now signs in with e-mail, password and an authenticator app."
+          }
+        },
+        "type": "object",
+        "required": [
+          "organization_id",
+          "role",
+          "signed_out"
+        ],
+        "title": "InvitationAccepted",
+        "examples": [
+          {
+            "organization_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+            "role": "pharmacy_staff",
+            "signed_out": true
+          }
+        ]
+      },
       "InvitationCreate": {
         "properties": {
           "email": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 254,
-                "pattern": "^[^@\\s]+@[^@\\s]+$"
-              },
-              {
-                "type": "null"
-              }
-            ],
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
             "title": "Email"
-          },
-          "phone": {
-            "anyOf": [
-              {
-                "type": "string",
-                "maxLength": 32,
-                "description": "Nigerian mobile number in any common format (0803 123 4567, +234 803 123 4567). Stored and returned in E.164 form.",
-                "examples": [
-                  "+2348031234567"
-                ]
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Phone"
           },
           "role": {
             "$ref": "#/components/schemas/RoleName"
@@ -12963,16 +16072,14 @@
         "additionalProperties": false,
         "type": "object",
         "required": [
+          "email",
           "role"
         ],
         "title": "InvitationCreate",
+        "description": "Staff sign in with e-mail, password and MFA, so invitations go to an e-mail address.",
         "examples": [
           {
             "email": "pharmacist@example.ng",
-            "role": "pharmacy_staff"
-          },
-          {
-            "phone": "+2348031234567",
             "role": "pharmacy_staff"
           }
         ]
@@ -12985,9 +16092,17 @@
             "title": "Id"
           },
           "organization_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Organization Id"
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id",
+            "description": "None: a platform-admin invitation."
           },
           "role": {
             "type": "string",
@@ -13021,7 +16136,7 @@
           "token": {
             "type": "string",
             "title": "Token",
-            "description": "Shown once. Pass it to the invitee, who accepts it while signed in with the invited e-mail address or phone number. MedLens does not send it."
+            "description": "Shown once; also e-mailed to the invitee (with a link when MEDLENS_APP__FRONTEND_URL is set)."
           }
         },
         "type": "object",
@@ -13049,6 +16164,73 @@
           }
         ]
       },
+      "InvitationPreview": {
+        "properties": {
+          "organization_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Name",
+            "description": "None: a platform-admin invitation."
+          },
+          "organization_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Type"
+          },
+          "role": {
+            "type": "string",
+            "title": "Role"
+          },
+          "recipient": {
+            "type": "string",
+            "title": "Recipient",
+            "description": "The invited address, masked."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Expires At"
+          },
+          "account_exists": {
+            "type": "boolean",
+            "title": "Account Exists",
+            "description": "Whether the invited address already has an account: sign in and accept (POST /invitations/accept); otherwise create it (POST /invitations/{token}/accept-new)."
+          }
+        },
+        "type": "object",
+        "required": [
+          "organization_name",
+          "organization_type",
+          "role",
+          "recipient",
+          "expires_at",
+          "account_exists"
+        ],
+        "title": "InvitationPreview",
+        "description": "What an invitation offers, for its landing page (the token is the only key).",
+        "examples": [
+          {
+            "account_exists": false,
+            "expires_at": "2026-11-26T09:00:00Z",
+            "organization_name": "Lekki Community Pharmacy",
+            "organization_type": "pharmacy",
+            "recipient": "am***@example.ng",
+            "role": "pharmacy_staff"
+          }
+        ]
+      },
       "InvitationRead": {
         "properties": {
           "id": {
@@ -13057,9 +16239,17 @@
             "title": "Id"
           },
           "organization_id": {
-            "type": "string",
-            "format": "uuid",
-            "title": "Organization Id"
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id",
+            "description": "None: a platform-admin invitation."
           },
           "role": {
             "type": "string",
@@ -13618,6 +16808,87 @@
           }
         ]
       },
+      "MfaEnabledResponse": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "authenticated",
+            "title": "Status",
+            "default": "authenticated"
+          },
+          "access_token": {
+            "type": "string",
+            "title": "Access Token"
+          },
+          "token_type": {
+            "type": "string",
+            "const": "Bearer",
+            "title": "Token Type",
+            "default": "Bearer"
+          },
+          "expires_in": {
+            "type": "integer",
+            "title": "Expires In",
+            "description": "Access-token lifetime in seconds."
+          },
+          "refresh_token": {
+            "type": "string",
+            "title": "Refresh Token",
+            "description": "Single use: every refresh returns a new one."
+          },
+          "refresh_expires_in": {
+            "type": "integer",
+            "title": "Refresh Expires In"
+          },
+          "organization_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "uuid"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Organization Id",
+            "description": "Active organization of the session."
+          },
+          "recovery_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Recovery Codes",
+            "description": "Ten one-time codes for signing in without the authenticator. Shown once: the user must store them safely."
+          }
+        },
+        "type": "object",
+        "required": [
+          "access_token",
+          "expires_in",
+          "refresh_token",
+          "refresh_expires_in",
+          "organization_id",
+          "recovery_codes"
+        ],
+        "title": "MfaEnabledResponse",
+        "description": "MFA is on: a session, and the recovery codes, shown this once.",
+        "examples": [
+          {
+            "access_token": "<access token (JWT)>",
+            "expires_in": 900,
+            "organization_id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e12",
+            "recovery_codes": [
+              "k7m2p-x9qrt",
+              "a3fh8-n2wd5"
+            ],
+            "refresh_expires_in": 2592000,
+            "refresh_token": "<refresh token>",
+            "status": "authenticated",
+            "token_type": "Bearer"
+          }
+        ]
+      },
       "MfaEnrolment": {
         "properties": {
           "secret": {
@@ -13652,22 +16923,46 @@
             "title": "Mfa Token"
           },
           "code": {
-            "type": "string",
-            "pattern": "^\\d{6}$",
-            "title": "Code"
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^\\d{6}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Code",
+            "description": "The authenticator app's code."
+          },
+          "recovery_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9 -]{10,16}$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Recovery Code",
+            "description": "Instead of `code` when the authenticator is lost: one of the recovery codes shown when MFA was turned on. Each works once."
           }
         },
         "additionalProperties": false,
         "type": "object",
         "required": [
-          "mfa_token",
-          "code"
+          "mfa_token"
         ],
         "title": "MfaVerifyRequest",
         "examples": [
           {
             "code": "123456",
             "mfa_token": "<access token (JWT)>"
+          },
+          {
+            "mfa_token": "<access token (JWT)>",
+            "recovery_code": "k7m2p-x9qrt"
           }
         ]
       },
@@ -13877,6 +17172,39 @@
           }
         ]
       },
+      "OrganizationRegistration": {
+        "properties": {
+          "organization": {
+            "$ref": "#/components/schemas/OrganizationCreate"
+          },
+          "admin": {
+            "$ref": "#/components/schemas/FounderAccount"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "organization",
+          "admin"
+        ],
+        "title": "OrganizationRegistration",
+        "description": "The public sign-up form for pharmacies, PPMVs, clinics, manufacturers and distributors:\nthe organization and its first administrator. Regulators are created by platform admins.",
+        "examples": [
+          {
+            "admin": {
+              "email": "amina@ikejapharmacy.ng",
+              "full_name": "Amina Bello",
+              "password": "••••••••••••••"
+            },
+            "organization": {
+              "name": "Ikeja Community Pharmacy",
+              "registration_number": "PCN/LA/2024/0193",
+              "state": "NG-LA",
+              "type": "pharmacy"
+            }
+          }
+        ]
+      },
       "OrganizationStatus": {
         "type": "string",
         "enum": [
@@ -14012,6 +17340,41 @@
             "note": "Lab sample was mislabelled; decision withdrawn."
           }
         ]
+      },
+      "Page_AdminUserRead_": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/AdminUserRead"
+            },
+            "type": "array",
+            "title": "Items"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Cursor",
+            "description": "Cursor for the next page; null on the last."
+          },
+          "has_more": {
+            "type": "boolean",
+            "title": "Has More",
+            "description": "Whether another page exists."
+          }
+        },
+        "type": "object",
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more"
+        ],
+        "title": "Page[AdminUserRead]"
       },
       "Page_AuditLogRead_": {
         "properties": {
@@ -14501,6 +17864,44 @@
           }
         ]
       },
+      "PasswordReset": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
+            "title": "Email"
+          },
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code"
+          },
+          "new_password": {
+            "type": "string",
+            "maxLength": 256,
+            "minLength": 1,
+            "format": "password",
+            "title": "New Password",
+            "writeOnly": true
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email",
+          "code",
+          "new_password"
+        ],
+        "title": "PasswordReset",
+        "examples": [
+          {
+            "code": "123456",
+            "email": "pharmacist@example.com",
+            "new_password": "••••••••••••••"
+          }
+        ]
+      },
       "Permission": {
         "type": "string",
         "enum": [
@@ -14554,6 +17955,27 @@
           {
             "description": "Submit a pack photo for verification.",
             "name": "scan:create"
+          }
+        ]
+      },
+      "PlatformInvitationCreate": {
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "pattern": "^[^@\\s]+@[^@\\s]+$",
+            "title": "Email"
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "email"
+        ],
+        "title": "PlatformInvitationCreate",
+        "examples": [
+          {
+            "email": "ops@medlens.co"
           }
         ]
       },
@@ -15040,6 +18462,71 @@
               }
             },
             "status": "not_ready"
+          }
+        ]
+      },
+      "RecoveryCodes": {
+        "properties": {
+          "recovery_codes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array",
+            "title": "Recovery Codes",
+            "description": "Shown once; the earlier codes stopped working."
+          }
+        },
+        "type": "object",
+        "required": [
+          "recovery_codes"
+        ],
+        "title": "RecoveryCodes",
+        "examples": [
+          {
+            "recovery_codes": [
+              "k7m2p-x9qrt",
+              "a3fh8-n2wd5"
+            ]
+          }
+        ]
+      },
+      "RecoveryCodesLeft": {
+        "properties": {
+          "remaining": {
+            "type": "integer",
+            "title": "Remaining",
+            "description": "Unused recovery codes. Regenerate them when few are left."
+          }
+        },
+        "type": "object",
+        "required": [
+          "remaining"
+        ],
+        "title": "RecoveryCodesLeft",
+        "examples": [
+          {
+            "remaining": 9
+          }
+        ]
+      },
+      "RecoveryCodesRegenerate": {
+        "properties": {
+          "code": {
+            "type": "string",
+            "pattern": "^\\d{6}$",
+            "title": "Code",
+            "description": "A current authenticator code, proving the device."
+          }
+        },
+        "additionalProperties": false,
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "title": "RecoveryCodesRegenerate",
+        "examples": [
+          {
+            "code": "123456"
           }
         ]
       },
@@ -16155,6 +19642,12 @@
             ],
             "title": "Email"
           },
+          "email_verified": {
+            "type": "boolean",
+            "title": "Email Verified",
+            "description": "The address was proven with a code sent to it.",
+            "default": false
+          },
           "phone": {
             "anyOf": [
               {
@@ -16220,6 +19713,7 @@
           {
             "created_at": "2026-11-03T09:00:00Z",
             "email": "pharmacist@example.ng",
+            "email_verified": true,
             "full_name": "Amina Bello",
             "global_role": "consumer",
             "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e30",
@@ -16261,6 +19755,15 @@
             "id": "0190a8d4-6f5e-7c3a-9b1e-2f4d6a8c0e30"
           }
         ]
+      },
+      "UserStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "suspended",
+          "deleted"
+        ],
+        "title": "UserStatus"
       },
       "UserUpdate": {
         "properties": {

@@ -7,7 +7,6 @@ from pathlib import Path
 from medlens.core.bootstrap import configure_process
 from medlens.core.config import Environment, get_settings
 from medlens.db.session import create_sync_engine, create_sync_session_factory, sync_session_scope
-from medlens.modules.auth.passwords import password_problems
 from medlens.seed import DEFAULT_DATA_DIR, run_seed
 from medlens.seed.greenbook import clear_cached_products
 
@@ -15,30 +14,7 @@ from medlens.seed.greenbook import clear_cached_products
 def main() -> int:
     parser = argparse.ArgumentParser(description="Load development seed data (idempotent).")
     parser.add_argument("--data-dir", type=Path, default=DEFAULT_DATA_DIR)
-    parser.add_argument(
-        "--staff-password",
-        help="password for the e-mail test users (set only where none exists yet)",
-    )
-    parser.add_argument(
-        "--staff-password-file",
-        type=Path,
-        help="read --staff-password from this file (keeps it off command lines and logs)",
-    )
-    parser.add_argument(
-        "--reset-staff-logins",
-        action="store_true",
-        help="with --staff-password: replace the e-mail test users' passwords and turn their MFA "
-        "off (local demos)",
-    )
     args = parser.parse_args()
-    if args.staff_password_file is not None:
-        args.staff_password = args.staff_password_file.read_text(encoding="utf-8").strip()
-    if args.reset_staff_logins and not args.staff_password:
-        sys.stderr.write("--reset-staff-logins needs --staff-password\n")
-        return 2
-    if args.staff_password and (problems := password_problems(args.staff_password)):
-        sys.stderr.write("--staff-password " + "; ".join(problems) + "\n")
-        return 2
 
     settings = get_settings()
     if settings.app.environment in {Environment.STAGING, Environment.PRODUCTION}:
@@ -49,19 +25,14 @@ def main() -> int:
     engine = create_sync_engine(settings.database, application_name="medlens-seed")
     try:
         with sync_session_scope(create_sync_session_factory(engine)) as session:
-            summary = run_seed(
-                session,
-                args.data_dir,
-                staff_password=args.staff_password,
-                reset_staff_logins=args.reset_staff_logins,
-            )
+            summary = run_seed(session, args.data_dir)
     finally:
         engine.dispose()
     clear_cached_products(settings)
     sys.stdout.write(
         f"seeded {summary.products} products, {summary.organizations} organizations, "
-        f"{summary.batches} batches, {summary.users} users, {summary.memberships} memberships, "
-        f"{summary.documents} knowledge documents\n"
+        f"{summary.batches} batches, {summary.documents} knowledge documents (no users: invite "
+        f"the first platform admin with make bootstrap-admin)\n"
     )
     return 0
 

@@ -52,6 +52,7 @@ def get_auth_service(
         sms=resources.sms,
         redis=resources.redis,
         settings=settings.auth,
+        email=resources.email,
     )
 
 

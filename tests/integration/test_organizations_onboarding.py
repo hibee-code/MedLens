@@ -1,6 +1,6 @@
 """Registering and verifying organizations, invitations, and branches."""
 
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
@@ -17,6 +17,7 @@ from medlens.modules.users.models import User
 from tests.integration.api_support import Api, new_email, new_phone
 
 pytestmark = pytest.mark.integration
+FOUNDER_PASSWORD = "Ojuelegba-Bridge-2026"  # pragma: allowlist secret
 
 
 def auth(api: Api, user: User, organization: Organization | None = None) -> dict[str, str]:
@@ -34,14 +35,35 @@ async def fresh(api: Api, user: User) -> User:
 
 
 # ------------------------------------------------------------------------- registration
-async def test_a_registered_organization_waits_for_verification(api: Api) -> None:
-    founder = await api.create_user()
-    platform, _ = await api.user_with_role(RoleName.PLATFORM_ADMIN)
-    body = {"name": "Ikeja Pharmacy", "type": "pharmacy", "state": "Lagos"}
+async def register(api: Api, **organization: object) -> tuple[User, Organization]:
+    """The public registration form, then the founder verifies the address."""
+    email = f"founder-{uuid4().hex[:8]}@example.com"
+    number = f"PCN/{uuid4().hex[:8]}"
+    form = {
+        "organization": {"name": "Ikeja Pharmacy", "type": "pharmacy", "state": "Lagos",
+                         "registration_number": number, **organization},
+        "admin": {"full_name": "Founder", "email": email, "password": FOUNDER_PASSWORD},
+    }  # fmt: skip
+    registered = await api.client.post("/api/v1/organizations/register", json=form)
+    assert registered.status_code == 202, registered.text
+    await api.client.post(
+        "/api/v1/organizations/register/verify",
+        json={"email": email, "code": api.last_email_code(email)},
+    )
+    async with UnitOfWork(api.resources.session_factory) as uow:
+        founder = await uow.session.scalar(select(User).where(User.email == email))
+        organization_row = await uow.session.scalar(
+            select(Organization).where(Organization.registration_number == number)
+        )
+    assert founder is not None
+    assert organization_row is not None
+    return founder, organization_row
 
-    created = await api.client.post("/api/v1/organizations", json=body, headers=auth(api, founder))
-    org_id = created.json()["id"]
-    organization = await api.reload(Organization, UUID(org_id))
+
+async def test_a_registered_organization_waits_for_verification(api: Api) -> None:
+    founder, organization = await register(api)
+    platform, _ = await api.user_with_role(RoleName.PLATFORM_ADMIN)
+    org_id = str(organization.id)
     before = await api.client.get(
         f"/api/v1/organizations/{org_id}/members",
         headers=auth(api, await fresh(api, founder), organization),
@@ -57,9 +79,8 @@ async def test_a_registered_organization_waits_for_verification(api: Api) -> Non
         f"/api/v1/organizations/{org_id}/verify", headers=admin_session(api, platform)
     )
 
-    assert created.status_code == 201, created.text
-    assert created.json()["status"] == "pending_verification"
-    assert created.json()["state"] == "NG-LA"
+    assert organization.status.value == "pending_verification"
+    assert organization.state == "NG-LA"
     assert before.status_code == 403  # an unverified organization grants nothing
     assert verified.json()["status"] == "active"
     assert verified.json()["verified_at"]
@@ -96,12 +117,16 @@ async def test_only_platform_admins_create_regulators_or_verify(api: Api) -> Non
 
 
 async def test_registration_numbers_are_unique_per_type(api: Api) -> None:
-    user = await api.create_user()
+    platform, _ = await api.user_with_role(RoleName.PLATFORM_ADMIN)
     number = f"PCN/{new_phone()}"
     body = {"name": "A", "type": "pharmacy", "registration_number": number}
 
-    first = await api.client.post("/api/v1/organizations", json=body, headers=auth(api, user))
-    second = await api.client.post("/api/v1/organizations", json=body, headers=auth(api, user))
+    first = await api.client.post(
+        "/api/v1/organizations", json=body, headers=admin_session(api, platform)
+    )
+    second = await api.client.post(
+        "/api/v1/organizations", json=body, headers=admin_session(api, platform)
+    )
 
     assert first.status_code == 201
     assert second.status_code == 409
@@ -157,25 +182,29 @@ async def test_an_invitation_is_accepted_by_the_invited_account(api: Api) -> Non
     assert invited.json()["recipient"].startswith("in***@")
     assert wrong_account.status_code == 404
     assert accepted.status_code == 200, accepted.text
-    assert accepted.json()["role"] == "pharmacy_staff"
-    assert reused.status_code == 404
+    assert accepted.json() == {
+        "organization_id": str(organization.id),
+        "role": "pharmacy_staff",
+        "signed_out": True,  # a consumer became staff: it now signs in with MFA
+    }
+    assert reused.status_code in {401, 404}
     assert listed.json()["items"][0]["status"] == "accepted"
     assert "token" not in listed.json()["items"][0]
     assert (await fresh(api, invitee)).perm_ver > invitee.perm_ver
 
 
-async def test_phone_invitations_and_revocation(api: Api) -> None:
+async def test_invitations_are_replaced_and_revocable(api: Api) -> None:
     admin, organization = await api.user_with_role(RoleName.MANUFACTURER_ADMIN)
-    phone = new_phone()
-    invitee = await api.create_user(phone=phone)
+    email = new_email("maker")
+    invitee = await api.create_user(email=email)
     url = f"/api/v1/organizations/{organization.id}/invitations"
     headers = admin_session(api, admin, organization)
 
     first = await api.client.post(
-        url, json={"phone": phone, "role": "manufacturer_staff"}, headers=headers
+        url, json={"email": email, "role": "manufacturer_staff"}, headers=headers
     )
     second = await api.client.post(
-        url, json={"phone": phone, "role": "manufacturer_staff"}, headers=headers
+        url, json={"email": email, "role": "manufacturer_staff"}, headers=headers
     )
     replaced = await api.client.post(
         "/api/v1/invitations/accept",
@@ -189,8 +218,8 @@ async def test_phone_invitations_and_revocation(api: Api) -> None:
         headers=auth(api, invitee),
     )
 
-    assert first.json()["recipient"].endswith(phone[-2:])
-    assert phone not in first.text
+    assert first.json()["recipient"].startswith("ma***@")
+    assert email not in first.text
     assert replaced.status_code == 404  # a new invitation replaces the open one
     assert revoked.status_code == 204
     assert after_revoke.status_code == 404
@@ -204,10 +233,8 @@ async def test_invitations_cannot_escalate_or_mismatch_the_organization(api: Api
     regulator_role = await api.client.post(
         url, json={"email": new_email(), "role": "regulator_admin"}, headers=headers
     )
-    both = await api.client.post(
-        url,
-        json={"email": new_email(), "phone": new_phone(), "role": "pharmacy_staff"},
-        headers=headers,
+    by_phone = await api.client.post(  # invitations go to e-mail addresses only
+        url, json={"phone": new_phone(), "role": "pharmacy_staff"}, headers=headers
     )
     other_org = await api.create_org(OrganizationType.PHARMACY)
     foreign = await api.client.post(
@@ -217,7 +244,7 @@ async def test_invitations_cannot_escalate_or_mismatch_the_organization(api: Api
     )
 
     assert regulator_role.status_code in {403, 422}
-    assert both.status_code == 422
+    assert by_phone.status_code == 422
     assert foreign.status_code == 404
     async with UnitOfWork(api.resources.session_factory) as uow:
         count = len(
@@ -275,17 +302,11 @@ async def test_branches_have_locations_and_stay_in_their_organization(api: Api) 
 
 
 async def test_founders_become_admins_of_their_type(api: Api) -> None:
-    founder = await api.create_user()
-
-    created = await api.client.post(
-        "/api/v1/organizations",
-        json={"name": "Lagos Distributors", "type": "distributor"},
-        headers=auth(api, founder),
-    )
+    _, organization = await register(api, name="Lagos Distributors", type="distributor")
 
     async with UnitOfWork(api.resources.session_factory) as uow:
         membership = await uow.session.scalar(
-            select(Membership).where(Membership.organization_id == UUID(created.json()["id"]))
+            select(Membership).where(Membership.organization_id == organization.id)
         )
     assert membership is not None
     assert membership.role == "pharmacy_admin"  # distributors use the pharmacy roles

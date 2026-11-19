@@ -13,7 +13,7 @@ from medlens.adapters.fakes import FakeLLM, FakeLLMProvider
 from medlens.ai.gateway.gateway import ImagePart, LLMGateway, Subject
 from medlens.ai.gateway.ledger import AsyncLedger, CallRecord, SyncLedger, _spend_key
 from medlens.ai.gateway.pricing import TokenUsage
-from medlens.core.config import LLMSettings, Settings
+from medlens.core.config import LLMSettings, ModelPrice, Settings
 from medlens.db.session import UnitOfWork
 from medlens.modules.control_plane.models import LLMCall, LLMCallOutcome
 from medlens.modules.verification.pipeline import PackExtraction
@@ -26,8 +26,8 @@ def call(cost: str, subject_id: str) -> CallRecord:
     return CallRecord(
         route="pack_extraction",
         tier="fast",
-        requested_model="claude-haiku-5-5",
-        model="claude-haiku-5-5",
+        requested_model="gemini-3.5-flash-lite",
+        model="gemini-3.5-flash-lite",
         prompt_version="pack_extraction@v1",
         usage=TokenUsage(input=100, output=10),
         cost_usd=Decimal(cost),
@@ -67,7 +67,11 @@ async def test_the_gateway_writes_one_row_per_call(api: Api, app_settings: Setti
     redis = Redis.from_url(app_settings.redis.url(app_settings.redis.cache_db))
     ledger = SyncLedger(api.sync_sessions, redis)
     provider = FakeLLMProvider(script=["not json", FakeLLM.reading(nafdac_number="A4-1234")])
-    gateway = LLMGateway(LLMSettings(enabled=True), provider, ledger)
+    priced = {
+        model: ModelPrice(input=0.10, output=0.50, cache_write=0, cache_read=0.01)
+        for model in LLMSettings().prices
+    }  # the defaults are the free tier's 0: price them to see the cost recorded
+    gateway = LLMGateway(LLMSettings(enabled=True, prices=priced), provider, ledger)
     subject = uuid4().hex
 
     gateway.run(

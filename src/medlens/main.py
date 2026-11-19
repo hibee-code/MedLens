@@ -49,7 +49,7 @@ from medlens.modules.health.router import router as health_router
 from medlens.modules.hotspots.router import router as hotspots_router
 from medlens.modules.knowledge.router import router as knowledge_router
 from medlens.modules.operations.router import router as failed_tasks_router
-from medlens.modules.organizations.router import invitations_router
+from medlens.modules.organizations.router import invitations_router, platform_invitations_router
 from medlens.modules.organizations.router import router as organizations_router
 from medlens.modules.products.router import claims_router as product_claims_router
 from medlens.modules.products.router import reference_images_router
@@ -58,6 +58,7 @@ from medlens.modules.rag.router import router as assistant_router
 from medlens.modules.rbac.router import router as admin_router
 from medlens.modules.reports.router import manufacturer_router, stats_router
 from medlens.modules.scans.router import router as scans_router
+from medlens.modules.users.router import admin_users_router
 from medlens.modules.users.router import router as users_router
 from medlens.queue.backpressure import QUEUES, SCANS_QUEUE, QueueDepth
 from medlens.resources import open_resources
@@ -69,6 +70,7 @@ API_V1_ROUTERS: tuple[APIRouter, ...] = (
     users_router,
     organizations_router,
     invitations_router,
+    platform_invitations_router,
     products_router,
     reference_images_router,
     product_claims_router,
@@ -80,6 +82,7 @@ API_V1_ROUTERS: tuple[APIRouter, ...] = (
     knowledge_router,
     assistant_router,
     admin_router,
+    admin_users_router,
     ai_admin_router,
     failed_tasks_router,
     audit_router,

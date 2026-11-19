@@ -26,6 +26,7 @@ PRODUCTION_SECRETS = {
     },
     "auth": {"jwt_keys": {"prod-jwt-1": generate_key()}, "jwt_active_key_id": "prod-jwt-1"},
     "sms": {"provider": "termii", "termii_api_key": secrets.token_hex(8)},  # provider-issued
+    "email": {"provider": "smtp", "smtp_host": "smtp.example.com"},
 }
 
 
@@ -166,9 +167,9 @@ def test_local_accepts_short_self_chosen_secrets(settings_factory) -> None:
 
 def test_provider_issued_keys_have_no_length_rule(settings_factory) -> None:
     groups = production()
-    groups["llm"] = {"anthropic_api_key": "provider-key"}  # pragma: allowlist secret
+    groups["llm"] = {"gemini_api_key": "provider-key"}  # pragma: allowlist secret
 
-    assert settings_factory(**groups).llm.anthropic_api_key is not None
+    assert settings_factory(**groups).llm.gemini_api_key is not None
 
 
 @pytest.mark.parametrize(
@@ -247,3 +248,22 @@ def test_env_file_typos_are_rejected_but_compose_variables_ignored(tmp_path) -> 
 def test_verification_thresholds_are_ordered(settings_factory, verification, message: str) -> None:
     with pytest.raises(ValidationError, match=message):
         settings_factory(verification=verification)
+
+
+def test_production_refuses_console_or_unencrypted_email(settings_factory) -> None:
+    console = production()
+    console["email"] = {"provider": "console"}
+    plain = production()
+    plain["email"] = {"provider": "smtp", "smtp_host": "relay", "smtp_security": "none"}
+
+    with pytest.raises(ValidationError, match="MEDLENS_EMAIL__PROVIDER must be smtp"):
+        settings_factory(**console)
+    with pytest.raises(ValidationError, match="MEDLENS_EMAIL__SMTP_SECURITY must not be none"):
+        settings_factory(**plain)
+
+
+def test_smtp_needs_a_host_and_a_sender_address(settings_factory) -> None:
+    with pytest.raises(ValidationError, match="smtp_host is required"):
+        settings_factory(email={"provider": "smtp"})
+    with pytest.raises(ValidationError, match="from_address must be an e-mail address"):
+        settings_factory(email={"from_address": "medlens"})

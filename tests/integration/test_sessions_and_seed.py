@@ -12,7 +12,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from medlens.core.config import Settings
 from medlens.core.errors import Conflict
 from medlens.core.routing import api_v1_router
-from medlens.core.security import verify_password
 from medlens.db.session import (
     DbSession,
     UnitOfWork,
@@ -24,12 +23,10 @@ from medlens.db.session import (
 from medlens.main import create_app
 from medlens.modules.rbac.models import Permission
 from medlens.modules.users.models import User
-from medlens.seed import TEST_USERS, run_seed
+from medlens.seed import run_seed
 from tests.integration.support import ROOT
 
 pytestmark = pytest.mark.integration
-
-STAFF_PASSWORD = "seed-staff-passphrase-2026"  # pragma: allowlist secret
 
 
 async def permission_exists(engine: AsyncEngine, name: str) -> bool:
@@ -119,29 +116,24 @@ def test_unit_of_work_outside_context_is_an_error(db_engine: AsyncEngine) -> Non
         _ = UnitOfWork(create_session_factory(db_engine)).session
 
 
-def test_seed_is_idempotent(migrated_settings: Settings) -> None:
+def test_seed_is_idempotent_and_creates_no_users(migrated_settings: Settings) -> None:
     engine = create_sync_engine(migrated_settings.database, application_name="medlens-tests")
     factory = create_sync_session_factory(engine)
     try:
         with factory() as session, session.begin():
-            first = run_seed(session, ROOT / "seed", staff_password=STAFF_PASSWORD)
+            users_before = session.scalar(select(func.count()).select_from(User))
+            first = run_seed(session, ROOT / "seed")
             second = run_seed(session, ROOT / "seed")
-            seed_emails = {user.email for user in TEST_USERS if user.email}
-            found = set(session.scalars(select(User.email).where(User.email.in_(seed_emails))))
-            hashes = set(
-                session.scalars(select(User.password_hash).where(User.email.in_(seed_emails)))
-            )
+            users_after = session.scalar(select(func.count()).select_from(User))
             session.rollback()  # leave the shared database as it was
     finally:
         engine.dispose()
 
-    # Counts are whole-table (other tests commit users), so check idempotence and the seed's rows.
+    # Counts are whole-table (other tests commit rows), so check idempotence and the seed's rows.
     assert first == second
     assert first.products >= 43
     assert first.batches >= 10
-    assert found == seed_emails
-    assert len(hashes) == 1  # one shared staff password, set once
-    assert verify_password(STAFF_PASSWORD, hashes.pop())[0]
+    assert users_after == users_before  # accounts come from invitations, never the seed
 
 
 def test_sync_session_scope_commits_and_rolls_back(

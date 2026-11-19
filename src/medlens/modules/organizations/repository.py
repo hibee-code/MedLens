@@ -49,8 +49,16 @@ class MembershipRepository:
         statement = select(Organization).where(*filters)
         return await _keyset(self.session, statement, Organization, params)
 
-    async def invitations_page(self, organization_id: UUID, params: PageParams) -> list[Invitation]:
-        statement = select(Invitation).where(Invitation.organization_id == organization_id)
+    async def invitations_page(
+        self, organization_id: UUID | None, params: PageParams
+    ) -> list[Invitation]:
+        """An organization's invitations, or with None the platform-admin invitations."""
+        scope = (
+            Invitation.organization_id == organization_id
+            if organization_id is not None
+            else Invitation.organization_id.is_(None)
+        )
+        statement = select(Invitation).where(scope)
         return await _keyset(self.session, statement, Invitation, params)
 
     async def members_page(

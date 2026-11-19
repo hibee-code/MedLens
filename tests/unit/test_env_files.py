@@ -213,7 +213,7 @@ def test_resync_keeps_values_and_unknown_variables(tmp_path: Path) -> None:
     env.write_text(
         "MEDLENS_APP__ENVIRONMENT=local\n"
         f"MEDLENS_DATABASE__PASSWORD='{SPACED_VALUE}'\n"
-        "MEDLENS_LLM__ANTHROPIC_API_KEY=\n"
+        "MEDLENS_LLM__GEMINI_API_KEY=\n"
         "MY_TOOL_TOKEN=keep-me\n"
     )
 
@@ -221,7 +221,7 @@ def test_resync_keeps_values_and_unknown_variables(tmp_path: Path) -> None:
 
     values = _values(env)
     assert values["MEDLENS_DATABASE__PASSWORD"] == SPACED_VALUE
-    assert values["MEDLENS_LLM__ANTHROPIC_API_KEY"] == ""  # an explicit empty value is kept
+    assert values["MEDLENS_LLM__GEMINI_API_KEY"] == ""  # an explicit empty value is kept
     assert values["MY_TOOL_TOKEN"] == "keep-me"
     assert values["MEDLENS_CRYPTO__HMAC_PEPPER"]  # missing secret generated
     assert "existing values kept" in message

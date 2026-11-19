@@ -119,21 +119,25 @@ class Branch(Entity, SoftDelete):
 
 
 class Invitation(Entity):
-    """An invitation to join an organization, addressed to a phone number or an e-mail address.
-
-    MedLens sends no messages besides login codes, so the inviter receives the token once and
-    passes it on; only its SHA-256 is stored. Accepting needs the token and a signed-in account
-    with the invited phone number or e-mail address.
+    """An invitation to join an organization with a role, or (no organization) to become a
+    platform admin. New invitations go to an e-mail address, which receives the token (the
+    inviter also gets it once); older ones may name a phone number. Only the token's SHA-256 is
+    stored. Accepting: a new person creates their account from the invitation (the token proves
+    the address); someone with an account signs in with the invited, verified address.
     """
 
     __tablename__ = "invitations"
     __table_args__ = (
         CheckConstraint("(email IS NULL) <> (phone_hash IS NULL)", name="one_recipient"),
         CheckConstraint("(phone_hash IS NULL) = (phone_e164 IS NULL)", name="phone_pair"),
+        CheckConstraint(
+            "(organization_id IS NULL) = (role = 'platform_admin')", name="platform_scope"
+        ),
         Index("ix_invitations_organization_id_created_at", "organization_id", "created_at"),
     )
 
-    organization_id: Mapped[UUID] = mapped_column(
+    # None: a platform-admin invitation (the platform_admin global role, no organization).
+    organization_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("organizations.id", ondelete="CASCADE")
     )
     role: Mapped[str] = mapped_column(ForeignKey("roles.name", onupdate="CASCADE"))

@@ -28,6 +28,9 @@ celerybeat-schedule*
 
 # Data kept outside Git (e.g. full Greenbook snapshots: seed/PROVENANCE.md)
 data/
+# Full Greenbook snapshots: no redistribution terms, never committed (decision log,
+# "Greenbook data handling"). Listed on its own so it stays ignored if data/ is narrowed.
+data/greenbook/
 
 # Demo state (scripts/demo.sh): staff password and authenticator secrets
 .demo/

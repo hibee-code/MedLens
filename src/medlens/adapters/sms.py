@@ -65,7 +65,7 @@ class _HttpSms:
                 async for attempt in AsyncRetrying(
                     retry=retry_if_exception_type(_TransientError),
                     stop=stop_after_attempt(MAX_ATTEMPTS),
-                    wait=wait_exponential_jitter(multiplier=0.2, max=2),
+                    wait=wait_exponential_jitter(initial=0.2, max=2, jitter=0.2),
                     reraise=True,
                 ):
                     with attempt:

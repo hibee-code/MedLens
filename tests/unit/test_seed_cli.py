@@ -37,12 +37,7 @@ def test_seeds_through_the_sync_engine(
     def fake_scope(factory: object):  # type: ignore[no-untyped-def]
         yield "session"
 
-    def fake_run_seed(
-        session: object,
-        data_dir: Path,
-        staff_password: str | None,
-        reset_staff_logins: bool,
-    ) -> SeedSummary:
+    def fake_run_seed(session: object, data_dir: Path) -> SeedSummary:
         calls["seeded"] = (session, data_dir)
         return SeedSummary(products=43, organizations=35, batches=10, users=9, memberships=6)
 
@@ -55,14 +50,6 @@ def test_seeds_through_the_sync_engine(
 
     assert cli.main() == 0
     assert calls == {"seeded": ("session", tmp_path), "disposed": True}
-    assert "seeded 43 products, 35 organizations" in capsys.readouterr().out
-
-
-def test_rejects_a_weak_staff_password(
-    monkeypatch: pytest.MonkeyPatch, settings_factory, capsys
-) -> None:
-    monkeypatch.setattr(cli, "get_settings", lambda: settings_factory(app={"environment": "local"}))
-    monkeypatch.setattr("sys.argv", ["medlens.seed", "--staff-password", "short"])
-
-    assert cli.main() == 2
-    assert "at least 12 characters" in capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert "seeded 43 products, 35 organizations" in out
+    assert "make bootstrap-admin" in out

@@ -3,6 +3,7 @@ foreign-key order. The deletes run in a transaction that is rolled back: the tes
 shared, so this test never empties it."""
 
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -74,6 +75,57 @@ async def test_the_reset_deletes_scans_and_what_hangs_off_them(api: Api) -> None
     assert left == {"scans": 0, "cases": 0}
     assert list(found.rows) == list(demo_reset.TABLES)
     assert "scan photos in object storage" in demo_reset.render(found)
+
+
+async def test_accounts_erases_the_demo_accounts_only(api: Api) -> None:
+    from medlens.modules.auth.models import RefreshToken
+    from medlens.modules.organizations.models import Membership, OrganizationType
+    from medlens.modules.rbac.models import RoleName
+    from medlens.modules.users.models import User, UserStatus
+
+    demo = await api.create_user(email=f"demo.{uuid4().hex[:8]}@medlens.test")
+    await api.add_member(
+        demo, await api.create_org(OrganizationType.PHARMACY), RoleName.PHARMACY_STAFF
+    )
+    await api.staff_login(demo)
+    other = await api.create_user(email=f"other.{uuid4().hex[:8]}@example.ng")
+
+    with api.sync_sessions() as session:
+        listed = demo_reset.demo_accounts(session)
+        erased = demo_reset.erase_accounts(session)
+        after = session.get(User, demo.id)
+        kept = session.get(User, other.id)
+        assert after is not None
+        assert kept is not None
+        memberships = session.scalar(
+            select(func.count()).select_from(Membership).where(Membership.user_id == demo.id)
+        )
+        open_sessions = session.scalar(
+            select(func.count())
+            .select_from(RefreshToken)
+            .where(RefreshToken.user_id == demo.id, RefreshToken.revoked_at.is_(None))
+        )
+        state = (after.status, after.email, after.password_hash, after.mfa_enabled, kept.status)
+        session.rollback()
+
+    assert demo.id in listed
+    assert other.id not in listed
+    assert erased >= 1
+    assert state == (UserStatus.DELETED, None, None, False, UserStatus.ACTIVE)
+    assert memberships == 0
+    assert open_sessions == 0
+
+
+def test_erasing_accounts_forgets_the_saved_demo_sessions(tmp_path: Path) -> None:
+    (tmp_path / "sessions").mkdir()
+    (tmp_path / "sessions" / "pharmacist").write_text("refresh")
+    (tmp_path / "someone@medlens.test.totp").write_text("secret")
+    (tmp_path / "someone@medlens.test.recovery").write_text("codes")
+    (tmp_path / "password").write_text("kept")
+
+    demo_reset._forget_demo_sessions(tmp_path)
+
+    assert sorted(path.name for path in tmp_path.rglob("*")) == ["password", "sessions"]
 
 
 # ------------------------------------------------------------------------- demo barcodes

@@ -26,3 +26,9 @@ LLM_DAILY_BUDGET = Gauge(
 LLM_CACHE_HITS = Counter(
     "medlens_llm_cache_hits", "Answers served from the gateway's cache (no call).", ["route"]
 )
+LLM_FALLBACKS = Counter(
+    "medlens_llm_fallbacks",
+    "Switches to the tier's next model, by route and reason (rate_limited, overloaded, blocked, "
+    "transient, failed, circuit_open).",
+    ["route", "reason"],
+)

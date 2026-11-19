@@ -30,6 +30,9 @@ class User(Entity):
     phone_e164: Mapped[str | None] = mapped_column(EncryptedText("users.phone_e164"))
     phone_hash: Mapped[str | None] = mapped_column(String(64), unique=True)
     email: Mapped[str | None] = mapped_column(CITEXT, unique=True)
+    # When the address was proven by a code sent to it. Password sign-in and invitations by
+    # e-mail need a verified address (decision log, "E-mail channel for staff").
+    email_verified_at: Mapped[datetime | None]
     password_hash: Mapped[str | None] = mapped_column(Text)
     full_name: Mapped[str | None] = mapped_column(Text)
     status: Mapped[UserStatus] = mapped_column(

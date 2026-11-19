@@ -5,7 +5,9 @@ seed/PROVENANCE.md and ``medlens.seed.greenbook``), creates one organization per
 holder, a national regulator, a test pharmacy, the synthetic batches in seed/batches.csv
 (numbers start with SEED-; one valid and one expired batch per product), the sample knowledge
 documents in seed/documents (marked as samples, not official notices; indexed without vectors,
-which the hourly backfill adds) and one test user per role.
+which the hourly backfill adds). It creates no users: the first platform admin is invited with
+`make bootstrap-admin`, and staff join the seeded organizations by invitation (scripts/demo.sh
+does both).
 
 Idempotent: everything is looked up or upserted by its natural key, so running it again changes
 nothing. Refuses to run in staging or production.
@@ -21,9 +23,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
 from medlens.core.config import KnowledgeSettings
-from medlens.core.crypto import phone_lookup_hash
 from medlens.core.identifiers import NigerianState
-from medlens.core.security import hash_password
 from medlens.modules.knowledge.ingestion import index_pages
 from medlens.modules.knowledge.models import DocumentKind, KnowledgeDocument, Visibility
 from medlens.modules.knowledge.text import extract_pages
@@ -39,46 +39,11 @@ from medlens.modules.products.models import (
     ReferenceImage,
     RegisterSource,
 )
-from medlens.modules.rbac.models import RoleName
 from medlens.modules.users.models import User
 
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[3] / "seed"
 REGULATOR_NAME = "National Agency for Food and Drug Administration and Control (NAFDAC)"
 PHARMACY_NAME = "MedLens Test Pharmacy (seed)"
-MANUFACTURER_FOR_TEST_USERS = "Emzor Pharmaceutical Industries Limited"
-
-
-@dataclass(frozen=True, slots=True)
-class TestUser:
-    role: RoleName
-    email: str | None = None
-    phone: str | None = None
-    organization: str | None = None  # "regulator", "pharmacy" or "manufacturer"
-
-
-TEST_USERS = (
-    TestUser(RoleName.CONSUMER, phone="+2348030000001"),
-    TestUser(RoleName.HEALTH_WORKER, phone="+2348030000002"),
-    TestUser(RoleName.PHARMACY_STAFF, email="pharmacy.staff@medlens.test", organization="pharmacy"),
-    TestUser(RoleName.PHARMACY_ADMIN, email="pharmacy.admin@medlens.test", organization="pharmacy"),
-    TestUser(
-        RoleName.MANUFACTURER_STAFF,
-        email="manufacturer.staff@medlens.test",
-        organization="manufacturer",
-    ),
-    TestUser(
-        RoleName.MANUFACTURER_ADMIN,
-        email="manufacturer.admin@medlens.test",
-        organization="manufacturer",
-    ),
-    TestUser(
-        RoleName.REGULATOR_ANALYST, email="regulator.analyst@medlens.test", organization="regulator"
-    ),
-    TestUser(
-        RoleName.REGULATOR_ADMIN, email="regulator.admin@medlens.test", organization="regulator"
-    ),
-    TestUser(RoleName.PLATFORM_ADMIN, email="platform.admin@medlens.test"),
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,18 +65,9 @@ def read_products(path: Path) -> list[dict[str, object]]:
         return [product_values(record) for record in csv.DictReader(handle)]
 
 
-def run_seed(
-    session: Session,
-    data_dir: Path = DEFAULT_DATA_DIR,
-    *,
-    staff_password: str | None = None,
-    reset_staff_logins: bool = False,
-) -> SeedSummary:
-    """Seed inside the caller's transaction. ``staff_password`` becomes the password of every
-    e-mail test user that has none yet (phone users sign in with SMS codes); with
-    ``reset_staff_logins`` it replaces their passwords and switches their MFA off (demos on a
-    database seeded earlier). The seed adds no reference images: synthetic ones are for tests
-    only, and those an earlier seed approved are withdrawn."""
+def run_seed(session: Session, data_dir: Path = DEFAULT_DATA_DIR) -> SeedSummary:
+    """Seed inside the caller's transaction. The seed adds no users and no reference images:
+    synthetic images are for tests only, and those an earlier seed approved are withdrawn."""
     products = read_products(data_dir / "products.csv")
     manufacturers = {
         name: _organization(session, str(name), OrganizationType.MANUFACTURER)
@@ -119,15 +75,13 @@ def run_seed(
             {str(p["manufacturer_name"]) for p in products if p["manufacturer_name"]}
         )
     }
-    regulator = _organization(
+    _organization(
         session,
         REGULATOR_NAME,
         OrganizationType.REGULATOR,
         jurisdiction_states=[state.value for state in NigerianState],
     )
-    pharmacy = _organization(
-        session, PHARMACY_NAME, OrganizationType.PHARMACY, state=NigerianState.LAGOS
-    )
+    _organization(session, PHARMACY_NAME, OrganizationType.PHARMACY, state=NigerianState.LAGOS)
 
     for product in products:
         organization = manufacturers.get(str(product["manufacturer_name"]))
@@ -140,30 +94,6 @@ def run_seed(
     _seed_batches(session, data_dir / "batches.csv")
     _seed_documents(session, data_dir / "documents")
 
-    memberships = {
-        "regulator": regulator,
-        "pharmacy": pharmacy,
-        "manufacturer": manufacturers.get(MANUFACTURER_FOR_TEST_USERS)
-        or next(iter(manufacturers.values())),
-    }
-    password_hash = hash_password(staff_password) if staff_password else None
-    for test_user in TEST_USERS:
-        user = _user(session, test_user)
-        if password_hash and test_user.email and (reset_staff_logins or user.password_hash is None):
-            user.password_hash = password_hash
-            if reset_staff_logins:
-                user.mfa_enabled = False
-                user.mfa_secret = None
-        if test_user.organization:
-            session.execute(
-                insert(Membership)
-                .values(
-                    user_id=user.id,
-                    organization_id=memberships[test_user.organization].id,
-                    role=test_user.role.value,
-                )
-                .on_conflict_do_nothing(index_elements=["user_id", "organization_id"])
-            )
     session.flush()
     _withdraw_synthetic_references(session)
     return SeedSummary(
@@ -274,30 +204,6 @@ def _withdraw_synthetic_references(session: Session) -> None:
     session.execute(
         delete(ReferenceImage).where(ReferenceImage.s3_key.startswith(SYNTHETIC_REFERENCE_PREFIX))
     )
-
-
-def _user(session: Session, test_user: TestUser) -> User:
-    if test_user.phone:
-        lookup = User.phone_hash == phone_lookup_hash(test_user.phone)
-    else:
-        lookup = User.email == test_user.email
-    existing = session.scalars(select(User).where(lookup)).first()
-    if existing is not None:
-        return existing
-    global_role = (
-        test_user.role
-        if test_user.organization is None
-        else RoleName.CONSUMER  # organization roles are held through the membership
-    )
-    user = User(
-        email=test_user.email,
-        full_name=f"Seed {test_user.role.value.replace('_', ' ')}",
-        global_role=global_role.value,
-    )
-    user.set_phone(test_user.phone)
-    session.add(user)
-    session.flush()
-    return user
 
 
 def _count(session: Session, model: type[object]) -> int:

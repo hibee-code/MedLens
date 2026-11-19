@@ -14,11 +14,13 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
+import pyotp
 from fastapi import APIRouter, Depends, FastAPI
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 
+from medlens.adapters.email import ConsoleEmail
 from medlens.adapters.fakes import (
     AsyncFakeLLMProvider,
     AsyncFakeReranker,
@@ -143,12 +145,45 @@ class Api:
                 return match.group(1)
         raise AssertionError(f"no SMS sent to {phone}")
 
+    # ------------------------------------------------------------------ e-mail
+    def emails_to(self, address: str) -> list[tuple[str, str]]:
+        """(subject, text) of every e-mail sent to ``address``, oldest first."""
+        email = self.resources.email
+        assert isinstance(email, ConsoleEmail)
+        return [(subject, text) for to, subject, text in email.sent if to == address]
+
+    def last_email_code(self, address: str) -> str:
+        for _, text in reversed(self.emails_to(address)):
+            match = re.search(r"\b(\d{6})\b", text)
+            if match:
+                return match.group(1)
+        raise AssertionError(f"no e-mail code sent to {address}")
+
     async def otp_login(self, phone: str) -> dict[str, Any]:
         assert (
             await self.client.post("/api/v1/auth/otp/request", json={"phone": phone})
         ).status_code == 202
         response = await self.client.post(
             "/api/v1/auth/otp/verify", json={"phone": phone, "code": self.last_code(phone)}
+        )
+        assert response.status_code == 200, response.text
+        body: dict[str, Any] = response.json()
+        return body
+
+    async def staff_login(self, user: User, password: str = PASSWORD) -> dict[str, Any]:
+        """A staff sign-in as it is now (every staff account needs MFA): password, then the
+        authenticator code. Sets MFA up for the user when it is not yet."""
+        with self.sync_sessions() as session, session.begin():
+            stored = session.get(User, user.id)
+            assert stored is not None
+            if not stored.mfa_enabled or stored.mfa_secret is None:
+                stored.mfa_secret, stored.mfa_enabled = pyotp.random_base32(), True
+            secret = stored.mfa_secret
+        challenge = (await self.password_login(user.email or "", password)).json()
+        assert challenge["status"] == "mfa_required", challenge
+        response = await self.client.post(
+            "/api/v1/auth/mfa/verify",
+            json={"mfa_token": challenge["mfa_token"], "code": pyotp.TOTP(secret).now()},
         )
         assert response.status_code == 200, response.text
         body: dict[str, Any] = response.json()
@@ -170,6 +205,7 @@ class Api:
         **fields: Any,
     ) -> User:
         fields.setdefault("password_hash", hash_password(password) if password else None)
+        fields.setdefault("email_verified_at", datetime.now(UTC))  # an admin-made account
         user = User(
             email=email if email is not None else new_email(),
             global_role=global_role.value,
@@ -274,7 +310,7 @@ class Api:
     # ------------------------------------------------------------------ AI
     def use_llm(self, *script: object, enabled: bool = True) -> AsyncFakeLLMProvider:
         """The assistant's gateway with a scripted provider, metering into this database."""
-        provider = AsyncFakeLLMProvider(script=list(script), model="claude-sonnet-5-5")
+        provider = AsyncFakeLLMProvider(script=list(script), model="gemini-3.8-flash")
         gateway = AsyncLLMGateway(
             LLMSettings(enabled=enabled),
             provider,

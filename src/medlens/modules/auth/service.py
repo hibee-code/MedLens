@@ -1,4 +1,5 @@
-"""Authentication flows: phone OTP, e-mail + password, MFA (TOTP), session refresh and logout.
+"""Authentication flows: phone OTP, e-mail + password (with e-mail verification and password
+reset by a code sent by e-mail), MFA (TOTP), session refresh and logout.
 
 Every flow runs in its own unit of work. Failed attempts are audited and committed *before*
 the error is raised, so a rejected login still leaves its trace; the same goes for revoking a
@@ -45,13 +46,14 @@ from medlens.core.security import (
 )
 from medlens.db.session import UnitOfWork
 from medlens.modules.audit.service import AuditService
-from medlens.modules.auth import totp
+from medlens.modules.auth import recovery, totp
 from medlens.modules.auth.metrics import REVOCATION_FALLBACKS
 from medlens.modules.auth.models import RefreshToken
 from medlens.modules.auth.passwords import password_problems
 from medlens.modules.auth.principal import MFA_METHOD, Principal
 from medlens.modules.auth.repository import AuthRepository
 from medlens.modules.auth.stores import (
+    EmailCodeStore,
     LoginLockout,
     MfaGuard,
     OtpResult,
@@ -59,8 +61,8 @@ from medlens.modules.auth.stores import (
     SessionRevocations,
 )
 from medlens.modules.organizations.models import OrganizationStatus
-from medlens.modules.rbac.models import RoleName
 from medlens.modules.users.models import User, UserStatus
+from medlens.ports.email import EmailDeliveryError, EmailPort, EmailUnavailableError
 from medlens.ports.sms import SmsDeliveryError, SMSPort, SmsUnavailableError
 from medlens.queue import outbox
 
@@ -70,6 +72,37 @@ INVALID_CODE = "The code is invalid or has expired."
 INVALID_CREDENTIALS = "Invalid e-mail address or password."
 INVALID_REFRESH = "The refresh token is invalid, expired or already used. Sign in again."
 OTP_MESSAGE = "Your MedLens code is {code}. It expires in {minutes} minutes. Never share it."
+EMAIL_NOT_VERIFIED = "Verify your e-mail address first: enter the code we sent to it."
+STAFF_SIGN_IN = (
+    "Staff accounts sign in with their e-mail address, password and authenticator app, "
+    "not with a code."
+)
+# Code purposes (EmailCodeStore): each code works only for its own flow.
+VERIFY_EMAIL, RESET_PASSWORD, ADD_EMAIL = "verify_email", "reset_password", "add_email"
+CONSUMER_SIGN_IN = "consumer_sign_in"
+EMAIL_TEXT = {
+    CONSUMER_SIGN_IN: (
+        "Your MedLens sign-in code",
+        "Your MedLens code is {code}. It expires in {minutes} minutes. Never share it. If you "
+        "did not try to sign in to MedLens, ignore this message.",
+    ),
+    VERIFY_EMAIL: (
+        "Verify your e-mail address for MedLens",
+        "Your MedLens code is {code}. It expires in {minutes} minutes. Enter it to verify this "
+        "e-mail address and finish registering your organization. If you did not register "
+        "with MedLens, ignore this message.",
+    ),
+    RESET_PASSWORD: (
+        "Reset your MedLens password",
+        "Your MedLens password-reset code is {code}. It expires in {minutes} minutes. If you did "
+        "not ask to reset your password, ignore this message: your password is unchanged.",
+    ),
+    ADD_EMAIL: (
+        "Confirm your e-mail address for MedLens",
+        "Your MedLens code is {code}. It expires in {minutes} minutes. Enter it to add this "
+        "e-mail address to your account. If you did not ask for this, ignore this message.",
+    ),
+}
 _API_KEY_TOUCH_INTERVAL = timedelta(minutes=1)
 
 
@@ -102,6 +135,12 @@ class MfaSetup:
     otpauth_uri: str
 
 
+@dataclass(frozen=True, slots=True)
+class MfaEnabled:
+    tokens: SessionTokens
+    recovery_codes: list[str]  # shown once
+
+
 SESSION_ENDED = "This session has ended. Sign in again."
 
 
@@ -126,12 +165,15 @@ class AuthService:
         sms: SMSPort,
         redis: Redis,
         settings: AuthSettings,
+        email: EmailPort | None = None,
     ) -> None:
         self._sessions = sessions
         self._keyring = keyring
         self._sms = sms
+        self._email = email
         self._settings = settings
         self._otp = OtpStore(redis, settings)
+        self._email_codes = EmailCodeStore(redis, settings)
         self._lockout = LoginLockout(redis, settings)
         self._mfa = MfaGuard(redis, challenge_ttl_seconds=settings.mfa_token_ttl_seconds)
         self.revocations = SessionRevocations(
@@ -141,7 +183,15 @@ class AuthService:
     # ------------------------------------------------------------------ phone OTP
     async def request_otp(self, phone: str, meta: RequestMeta) -> int:
         """Sends a code whether or not an account exists (a new one is created on verify), so
-        the response never reveals which numbers are registered."""
+        the response never reveals which numbers are registered. Staff accounts sign in with a
+        password and MFA: their numbers get no code (and the same answer)."""
+        async with UnitOfWork(self._sessions) as uow:
+            repo = AuthRepository(uow.session)
+            existing = await repo.user_by_phone_hash(phone_lookup_hash(phone))
+            staff = existing is not None and await repo.is_staff(existing)
+        if staff:
+            log.info("auth.otp_skipped_staff")
+            return self._settings.otp_ttl_seconds
         try:
             code = await self._otp.issue(phone)
         except RedisError:
@@ -181,6 +231,15 @@ class AuthService:
                 raise Unauthorized(INVALID_CODE)
             user = await repo.user_by_phone_hash(phone_lookup_hash(phone))
             created = user is None
+            if user is not None and await repo.is_staff(user):
+                await audit.record(
+                    "auth.login_failed",
+                    actor_user_id=user.id,
+                    meta=meta,
+                    details={"method": "otp", "reason": "staff_account"},
+                )
+                await uow.commit()
+                raise Forbidden(STAFF_SIGN_IN)
             if user is None:
                 user = User()
                 user.set_phone(phone)
@@ -231,6 +290,9 @@ class AuthService:
             if upgraded_hash:
                 user.password_hash = upgraded_hash  # argon2 parameters changed since it was set
             await self._require_active(uow, user, meta)
+            if user.email_verified_at is None:
+                await uow.commit()
+                raise Forbidden(EMAIL_NOT_VERIFIED)
 
             if user.mfa_enabled or await self._mfa_mandatory(repo, user):
                 purpose = "verify" if user.mfa_enabled else "enrol"
@@ -259,6 +321,277 @@ class AuthService:
             await uow.commit()
         return tokens
 
+    # ------------------------------------------------------------------ e-mail codes
+    async def _send_code(self, purpose: str, email: str, *, key: str | None = None) -> int:
+        """Issue a code for ``purpose`` and e-mail it to ``email``; returns how long it is valid.
+        ``key`` scopes the code (default: the address). A refused address gets the same answer
+        as any other (no oracle on addresses)."""
+        if self._email is None:
+            raise DependencyUnavailable(
+                "E-mail is not configured.", dependency="email", retry_after_seconds=60
+            )
+        try:
+            code = await self._email_codes.issue(purpose, key or email)
+        except RedisError:
+            raise _redis_unavailable() from None
+        subject, text = EMAIL_TEXT[purpose]
+        minutes = self._settings.email_code_ttl_seconds // 60
+        try:
+            await self._email.send(email, subject, text.format(code=code, minutes=minutes))
+        except EmailUnavailableError:
+            raise DependencyUnavailable(
+                "We could not send the e-mail right now. Try again shortly.",
+                dependency="email",
+                retry_after_seconds=30,
+            ) from None
+        except EmailDeliveryError:
+            log.warning("auth.email_not_delivered", purpose=purpose)
+        return self._settings.email_code_ttl_seconds
+
+    async def _check_code(self, purpose: str, email: str, code: str) -> OtpResult:
+        try:
+            return await self._email_codes.check(purpose, email, code)
+        except RedisError:
+            raise _redis_unavailable() from None
+
+    @staticmethod
+    def _password_ok(password: str, email: str, field: str) -> None:
+        problems = password_problems(password, email=email)
+        if problems:
+            raise ValidationFailed(
+                "The password is not acceptable.",
+                errors=[
+                    {"loc": ["body", field], "msg": problem, "type": "password"}
+                    for problem in problems
+                ],
+            )
+
+    async def request_email_otp(self, email: str, meta: RequestMeta) -> int:
+        """Consumers who prefer e-mail to SMS: a sign-in code by e-mail; the account is created
+        on first sign-in, as with phone codes. The same answer for every address; staff
+        accounts get no code (they sign in with a password and MFA)."""
+        async with UnitOfWork(self._sessions) as uow:
+            repo = AuthRepository(uow.session)
+            existing = await repo.user_by_email(email)
+            staff = existing is not None and await repo.is_staff(existing)
+            await AuditService(uow.session).record(
+                "auth.email_otp_requested",
+                actor_user_id=existing.id if existing else None,
+                meta=meta,
+                details={"staff_account": staff},
+            )
+            await uow.commit()
+        if staff:
+            return self._settings.email_code_ttl_seconds
+        return await self._send_code(CONSUMER_SIGN_IN, email)
+
+    async def verify_email_otp(self, email: str, code: str, meta: RequestMeta) -> SessionTokens:
+        """Exchanges the e-mailed code for a consumer session, creating the account (with a
+        verified address) on first sign-in."""
+        result = await self._check_code(CONSUMER_SIGN_IN, email, code)
+        async with UnitOfWork(self._sessions) as uow:
+            repo, audit = AuthRepository(uow.session), AuditService(uow.session)
+            user = await repo.user_by_email(email)
+            if result is not OtpResult.OK:
+                await audit.record(
+                    "auth.login_failed",
+                    meta=meta,
+                    details={"method": "email_otp", "reason": result.value},
+                )
+                await uow.commit()
+                raise Unauthorized(INVALID_CODE)
+            if user is not None and await repo.is_staff(user):
+                await audit.record(
+                    "auth.login_failed",
+                    actor_user_id=user.id,
+                    meta=meta,
+                    details={"method": "email_otp", "reason": "staff_account"},
+                )
+                await uow.commit()
+                raise Forbidden(STAFF_SIGN_IN)
+            created = user is None
+            if user is None:
+                user = User(email=email, email_verified_at=_now())
+                uow.session.add(user)
+                await uow.session.flush()
+            elif user.email_verified_at is None:
+                user.email_verified_at = _now()  # the code proves the address
+            await self._require_active(uow, user, meta)
+            tokens = await self._start_session(uow.session, user, ("email_otp",), meta)
+            await audit.record(
+                "auth.login_succeeded",
+                actor_user_id=user.id,
+                meta=meta,
+                details={"method": "email_otp", "new_account": created},
+            )
+            await uow.commit()
+        return tokens
+
+    async def send_email_verification(self, email: str) -> int:
+        """E-mails a code proving the address (organization founders, at registration)."""
+        return await self._send_code(VERIFY_EMAIL, email)
+
+    async def verify_email(
+        self, email: str, code: str, meta: RequestMeta
+    ) -> SessionTokens | MfaChallenge:
+        """Proves the address with its sign-up code and signs the account in."""
+        result = await self._check_code(VERIFY_EMAIL, email, code)
+        async with UnitOfWork(self._sessions) as uow:
+            repo, audit = AuthRepository(uow.session), AuditService(uow.session)
+            user = await repo.user_by_email(email)
+            if result is not OtpResult.OK or user is None:
+                await audit.record(
+                    "auth.email_verification_failed", meta=meta, details={"reason": result.value}
+                )
+                await uow.commit()
+                raise Unauthorized(INVALID_CODE)
+            await self._require_active(uow, user, meta)
+            if user.email_verified_at is None:
+                user.email_verified_at = _now()
+            await audit.record("auth.email_verified", actor_user_id=user.id, meta=meta)
+            return await self._session_or_challenge(uow, user, meta)
+
+    async def sign_in_invited(
+        self, user_id: UUID, meta: RequestMeta
+    ) -> SessionTokens | MfaChallenge:
+        """Right after an account was created from an invitation (which proved its address and
+        set its password): the next step, an MFA enrolment challenge for staff."""
+        async with UnitOfWork(self._sessions) as uow:
+            user = await AuthRepository(uow.session).user_by_id(user_id)
+            if user is None:
+                raise Unauthorized("Sign in again.")
+            await self._require_active(uow, user, meta)
+            return await self._session_or_challenge(uow, user, meta)
+
+    async def _session_or_challenge(
+        self, uow: UnitOfWork, user: User, meta: RequestMeta
+    ) -> SessionTokens | MfaChallenge:
+        """After a proven password or e-mail code: a session, or an MFA challenge when the
+        account needs a second factor. Commits."""
+        repo = AuthRepository(uow.session)
+        if user.mfa_enabled or await self._mfa_mandatory(repo, user):
+            purpose = "verify" if user.mfa_enabled else "enrol"
+            token = self._keyring.issue(
+                "mfa", subject=user.id, auth_methods=("pwd",), purpose=purpose
+            )
+            await uow.commit()
+            status: Literal["mfa_required", "mfa_enrolment_required"] = (
+                "mfa_required" if user.mfa_enabled else "mfa_enrolment_required"
+            )
+            return MfaChallenge(status, token, self._keyring.mfa_ttl_seconds)
+        tokens = await self._start_session(uow.session, user, ("pwd",), meta)
+        await AuditService(uow.session).record(
+            "auth.login_succeeded",
+            actor_user_id=user.id,
+            meta=meta,
+            details={"method": "email_code"},
+        )
+        await uow.commit()
+        return tokens
+
+    async def forgot_password(self, email: str, meta: RequestMeta) -> int:
+        """E-mails a reset code to an active account with this address; the answer is the same
+        for any address."""
+        async with UnitOfWork(self._sessions) as uow:
+            user = await AuthRepository(uow.session).user_by_email(email)
+            active = user is not None and user.status is UserStatus.ACTIVE
+            await AuditService(uow.session).record(
+                "auth.password_reset_requested",
+                actor_user_id=user.id if user else None,
+                meta=meta,
+                details={"account_found": active},
+            )
+            await uow.commit()
+        if not active:
+            return self._settings.email_code_ttl_seconds
+        return await self._send_code(RESET_PASSWORD, email)
+
+    async def reset_password(
+        self, email: str, code: str, new_password: str, meta: RequestMeta
+    ) -> None:
+        """Sets a new password with the e-mailed code and ends every session. The code also
+        proves the address, so an unverified account becomes verified."""
+        self._password_ok(new_password, email, "new_password")
+        result = await self._check_code(RESET_PASSWORD, email, code)
+        async with UnitOfWork(self._sessions) as uow:
+            repo, audit = AuthRepository(uow.session), AuditService(uow.session)
+            user = await repo.user_by_email(email)
+            if result is not OtpResult.OK or user is None:
+                await audit.record(
+                    "auth.password_reset_failed", meta=meta, details={"reason": result.value}
+                )
+                await uow.commit()
+                raise Unauthorized(INVALID_CODE)
+            await self._require_active(uow, user, meta)
+            user.password_hash = hash_password(new_password)
+            if user.email_verified_at is None:
+                user.email_verified_at = _now()
+            ended = await self.end_sessions(uow.session, user.id)
+            await audit.record(
+                "auth.password_reset",
+                actor_user_id=user.id,
+                meta=meta,
+                details={"sessions_ended": len(ended)},
+            )
+            await uow.commit()
+        await self._publish_revocations(ended)
+        try:
+            await self._lockout.record_success(email)  # a reset clears a lockout
+        except RedisError:
+            log.warning("auth.lockout_not_cleared")
+
+    async def request_email_change(
+        self, principal: Principal, email: str, meta: RequestMeta
+    ) -> int:
+        """Signed in (e.g. by phone): e-mails a code to add this address to the account. An
+        address another account uses gets no code, and the same answer."""
+        if principal.user_id is None:
+            raise Forbidden("Only signed-in users can add an e-mail address.")
+        async with UnitOfWork(self._sessions) as uow:
+            owner = await AuthRepository(uow.session).user_by_email(email)
+            taken = owner is not None and owner.id != principal.user_id
+            await AuditService(uow.session).record(
+                "auth.email_change_requested",
+                actor_user_id=principal.user_id,
+                meta=meta,
+                details={"address_taken": taken},
+            )
+            await uow.commit()
+        if taken:
+            return self._settings.email_code_ttl_seconds
+        return await self._send_code(ADD_EMAIL, email, key=_scoped(principal.user_id, email))
+
+    async def confirm_email_change(
+        self, principal: Principal, email: str, code: str, meta: RequestMeta
+    ) -> User:
+        """Sets the account's (verified) e-mail address with the code. To sign in with it, set a
+        password with the password-reset flow."""
+        if principal.user_id is None:
+            raise Forbidden("Only signed-in users can add an e-mail address.")
+        result = await self._check_code(ADD_EMAIL, _scoped(principal.user_id, email), code)
+        async with UnitOfWork(self._sessions) as uow:
+            repo, audit = AuthRepository(uow.session), AuditService(uow.session)
+            if result is not OtpResult.OK:
+                await audit.record(
+                    "auth.email_change_failed",
+                    actor_user_id=principal.user_id,
+                    meta=meta,
+                    details={"reason": result.value},
+                )
+                await uow.commit()
+                raise Unauthorized(INVALID_CODE)
+            owner = await repo.user_by_email(email)
+            if owner is not None and owner.id != principal.user_id:
+                raise Conflict("This e-mail address belongs to another account.")
+            user = await repo.user_by_id(principal.user_id)
+            if user is None:
+                raise Unauthorized("Sign in again.")
+            user.email = email
+            user.email_verified_at = _now()
+            await audit.record("auth.email_changed", actor_user_id=user.id, meta=meta)
+            await uow.commit()
+        return user
+
     # ------------------------------------------------------------------ MFA
     def mfa_claims(self, token: str, *, purpose: str) -> TokenClaims:
         try:
@@ -269,7 +602,16 @@ class AuthService:
             raise Unauthorized("This token cannot be used here.")
         return claims
 
-    async def verify_mfa(self, mfa_token: str, code: str, meta: RequestMeta) -> SessionTokens:
+    async def verify_mfa(
+        self,
+        mfa_token: str,
+        code: str | None,
+        meta: RequestMeta,
+        *,
+        recovery_code: str | None = None,
+    ) -> SessionTokens:
+        """The second step of a sign-in: an authenticator code, or one of the account's unused
+        recovery codes (each works once). Both count against the challenge's attempts."""
         claims = self.mfa_claims(mfa_token, purpose="verify")
         if not await self._mfa.register_attempt(claims.token_id):
             raise Unauthorized("Too many wrong codes. Sign in again.")
@@ -278,20 +620,76 @@ class AuthService:
             user = await repo.user_by_id(claims.subject)
             if user is None or not user.mfa_enabled or user.mfa_secret is None:
                 raise Unauthorized("This sign-in attempt has expired. Sign in again.")
-            if not await self._totp_ok(user, code):
+            method = "password+mfa"
+            if recovery_code is not None:
+                used = await repo.unused_recovery_code(user.id, recovery.digest(recovery_code))
+                if used is not None:
+                    used.used_at = _now()
+                    method = "password+recovery_code"
+                verified = used is not None
+            else:
+                verified = code is not None and await self._totp_ok(user, code)
+            if not verified:
                 await audit.record("auth.mfa_failed", actor_user_id=user.id, meta=meta)
                 await uow.commit()
                 raise Unauthorized(INVALID_CODE)
             await self._require_active(uow, user, meta)
             tokens = await self._start_session(uow.session, user, ("pwd", MFA_METHOD), meta)
+            details: dict[str, object] = {"method": method}
+            if recovery_code is not None:
+                await uow.session.flush()
+                details["recovery_codes_left"] = await repo.recovery_codes_left(user.id)
             await audit.record(
-                "auth.login_succeeded",
-                actor_user_id=user.id,
-                meta=meta,
-                details={"method": "password+mfa"},
+                "auth.login_succeeded", actor_user_id=user.id, meta=meta, details=details
             )
             await uow.commit()
         return tokens
+
+    async def regenerate_recovery_codes(
+        self, principal: Principal, code: str, meta: RequestMeta
+    ) -> list[str]:
+        """New recovery codes for an MFA-verified session that proves the authenticator again;
+        the earlier codes stop working."""
+        user_id = principal.require_user_id()
+        async with UnitOfWork(self._sessions) as uow:
+            repo, audit = AuthRepository(uow.session), AuditService(uow.session)
+            user = await repo.user_by_id(user_id)
+            if user is None or user.status is not UserStatus.ACTIVE:
+                raise Unauthorized("Sign in again.")
+            if not user.mfa_enabled:
+                raise Conflict("Multi-factor authentication is not enabled.")
+            if not await self._totp_ok(user, code):
+                await audit.record("auth.mfa_failed", actor_user_id=user.id, meta=meta)
+                await uow.commit()
+                raise ValidationFailed(
+                    INVALID_CODE,
+                    errors=[{"loc": ["body", "code"], "msg": INVALID_CODE, "type": "mfa_code"}],
+                )
+            codes = await self._issue_recovery_codes(repo, user.id)
+            await audit.record(
+                "auth.mfa_recovery_codes_regenerated", actor_user_id=user.id, meta=meta
+            )
+            await uow.commit()
+        return codes
+
+    async def recovery_codes_left(self, user_id: UUID) -> int:
+        async with UnitOfWork(self._sessions) as uow:
+            return await AuthRepository(uow.session).recovery_codes_left(user_id)
+
+    @staticmethod
+    async def _issue_recovery_codes(repo: AuthRepository, user_id: UUID) -> list[str]:
+        codes = recovery.new_codes()
+        await repo.replace_recovery_codes(user_id, [recovery.digest(code) for code in codes])
+        return codes
+
+    async def reset_mfa(self, session: AsyncSession, user: User) -> list[UUID]:
+        """An administrator's reset for a lost authenticator, in the caller's transaction:
+        removes the secret and the recovery codes and ends every session (returned: publish
+        them after committing). Staff set MFA up again at their next sign-in."""
+        user.mfa_enabled = False
+        user.mfa_secret = None
+        await AuthRepository(session).delete_recovery_codes(user.id)
+        return await self.end_sessions(session, user.id)
 
     async def start_mfa_enrolment(self, user_id: UUID, meta: RequestMeta) -> MfaSetup:
         async with UnitOfWork(self._sessions) as uow:
@@ -312,7 +710,7 @@ class AuthService:
 
     async def confirm_mfa(
         self, user_id: UUID, code: str, prior_methods: tuple[str, ...], meta: RequestMeta
-    ) -> SessionTokens:
+    ) -> MfaEnabled:
         async with UnitOfWork(self._sessions) as uow:
             audit = AuditService(uow.session)
             user = await AuthRepository(uow.session).user_by_id(user_id)
@@ -330,11 +728,12 @@ class AuthService:
                     errors=[{"loc": ["body", "code"], "msg": INVALID_CODE, "type": "mfa_code"}],
                 )
             user.mfa_enabled = True
+            codes = await self._issue_recovery_codes(AuthRepository(uow.session), user.id)
             await audit.record("auth.mfa_enabled", actor_user_id=user.id, meta=meta)
             methods = tuple(dict.fromkeys((*prior_methods, MFA_METHOD)))
             tokens = await self._start_session(uow.session, user, methods, meta)
             await uow.commit()
-        return tokens
+        return MfaEnabled(tokens, codes)
 
     # ------------------------------------------------------------------ sessions
     async def refresh(self, refresh_token: str, meta: RequestMeta) -> SessionTokens:
@@ -582,9 +981,9 @@ class AuthService:
 
     @staticmethod
     async def _mfa_mandatory(repo: AuthRepository, user: User) -> bool:
-        if user.global_role == RoleName.PLATFORM_ADMIN:
-            return True
-        return await repo.belongs_to_regulator(user.id)
+        """Every staff account needs a second factor (decision log, "Accounts: consumers sign
+        themselves up, staff are invited")."""
+        return await repo.is_staff(user)
 
     async def _totp_ok(self, user: User, code: str) -> bool:
         if user.mfa_secret is None:
@@ -653,6 +1052,11 @@ class AuthService:
             await self.revocations.revoke(*session_ids)
         except RedisError as exc:
             log.warning("auth.revocation_publish_failed", error=type(exc).__name__)
+
+
+def _scoped(user_id: UUID, email: str) -> str:
+    """An add-address code belongs to one account and one address."""
+    return f"{user_id}:{email}"
 
 
 def _field_error(field: str, message: str) -> ValidationFailed:

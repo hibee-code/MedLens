@@ -97,7 +97,7 @@ async def test_switch_organization_and_keep_it_across_refresh(api: Api) -> None:
     user = await api.create_user()
     await api.add_member(user, pharmacy, RoleName.PHARMACY_STAFF)
     await api.add_member(user, clinic, RoleName.PHARMACY_ADMIN)
-    session = (await api.password_login(user.email or "")).json()
+    session = await api.staff_login(user)
     assert session["organization_id"] is None  # two memberships: no default
 
     switched = await api.client.post(

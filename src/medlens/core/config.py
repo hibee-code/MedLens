@@ -117,6 +117,9 @@ class AppSettings(_Group):
     # None = automatic: docs are served everywhere except production.
     docs_enabled: bool | None = None
     cors_origins: list[str] = Field(default_factory=list)
+    # The frontend's base URL: invitation e-mails link to <frontend_url>/invitations/<token>.
+    # Unset: the e-mail gives the token to enter instead.
+    frontend_url: str | None = None
     max_request_body_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
     # Image uploads: file size, and decoded pixels (decompression-bomb guard).
     max_upload_bytes: int = Field(default=8 * 1024 * 1024, gt=0)
@@ -218,6 +221,9 @@ class AuthSettings(_Group):
     mfa_issuer: str = "MedLens"
     otp_ttl_seconds: int = Field(default=300, ge=60, le=900)
     otp_max_attempts: int = Field(default=5, ge=1, le=10)
+    # E-mail codes (sign-up verification, password reset, adding an address): valid this long,
+    # with the same attempt limit as SMS codes.
+    email_code_ttl_seconds: int = Field(default=900, ge=60, le=3600)
     # Progressive lockout: after login_max_failures failed logins within the window (per
     # account and per IP), lock for login_lockout_base_seconds, doubling each time up to the max.
     login_max_failures: int = Field(default=5, ge=1)
@@ -262,6 +268,31 @@ class SmsSettings(_Group):
         return self
 
 
+class EmailSettings(_Group):
+    """Outbound e-mail: staff sign-up codes, password resets and invitations (decision log,
+    "E-mail channel for staff"). console logs messages instead of sending them (local and test
+    only); smtp sends through any provider's SMTP server."""
+
+    provider: Literal["console", "smtp"] = "console"
+    from_address: str = "no-reply@medlens.local"
+    from_name: str = "MedLens"
+    smtp_host: str | None = None
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str | None = None
+    smtp_password: SecretStr | None = None
+    # starttls (port 587), ssl (implicit TLS, port 465) or none (local relays only).
+    smtp_security: Literal["starttls", "ssl", "none"] = "starttls"
+    timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+
+    @model_validator(mode="after")
+    def _smtp_server(self) -> Self:
+        if self.provider == "smtp" and not self.smtp_host:
+            raise ValueError("smtp_host is required when provider is smtp")
+        if "@" not in self.from_address:
+            raise ValueError("from_address must be an e-mail address")
+        return self
+
+
 class ModelPrice(_Group):
     """US dollars per million tokens."""
 
@@ -271,36 +302,72 @@ class ModelPrice(_Group):
     cache_read: float = Field(ge=0)
 
 
+# Free tier (decision log, "Switched LLM provider from Anthropic to Gemini"): every default
+# model is priced at 0. Calls are still metered and the daily budget still applies; set real
+# prices (US dollars per million tokens) when billing is enabled.
+_FREE = {"input": 0.0, "output": 0.0, "cache_write": 0.0, "cache_read": 0.0}
+TIERS = ("fast", "balanced")
+
+
 def _default_prices() -> dict[str, ModelPrice]:
     return {
-        "claude-haiku-5-5": ModelPrice(input=0.10, output=0.50, cache_write=0.125, cache_read=0.01),
-        "claude-sonnet-5-5": ModelPrice(input=2.0, output=10.0, cache_write=2.5, cache_read=0.20),
+        model: ModelPrice(**_FREE)
+        for model in ("gemini-3.5-flash-lite", "gemini-3.8-flash", "gemini-4-hydrogen")
     }
+
+
+def _default_fallbacks() -> dict[str, list[str]]:
+    return {"fast": ["gemini-3.8-flash"], "balanced": ["gemini-4-hydrogen"]}
 
 
 class LLMSettings(_Group):
     # Global AI kill switch. When off, every AI feature falls back to its non-AI behaviour.
     enabled: bool = False
-    anthropic_api_key: SecretStr | None = None
+    # Gemini API key (Google AI Studio). Unset: the SDK reads GEMINI_API_KEY / GOOGLE_API_KEY.
+    gemini_api_key: SecretStr | None = None
     request_timeout_seconds: float = Field(default=30.0, gt=0)
+    # Retries of the same model on transient errors (timeouts, 5xx), with jittered backoff,
+    # before the gateway moves to the tier's next model.
     max_retries: int = Field(default=2, ge=0, le=5)
     # Model tiers: routes name a tier, never a model id (ai/gateway/registry.py).
-    model_fast: str = Field(default="claude-haiku-5-5", min_length=1)
-    model_balanced: str = Field(default="claude-sonnet-5-5", min_length=1)
+    model_fast: str = Field(default="gemini-3.5-flash-lite", min_length=1)
+    model_balanced: str = Field(default="gemini-3.8-flash", min_length=1)
+    # Per tier, the backup models tried in order after the primary fails (rate limit, safety
+    # block, empty answer, repeated transient errors). JSON in the environment.
+    fallback_models: dict[str, list[str]] = Field(default_factory=_default_fallbacks)
     # Calls stop for the rest of the UTC day once the day's metered cost reaches this.
     daily_budget_usd: float = Field(default=5.0, ge=0)
     prices: dict[str, ModelPrice] = Field(default_factory=_default_prices)
-    # Server-side refusal fallback on the balanced tier (Claude API only).
-    refusal_fallback: bool = True
     # Validated answers of cacheable routes (the assistant) are reused for identical requests
     # (same model, prompt version, documents and question) for this long; 0 turns it off.
     answer_cache_seconds: int = Field(default=3600, ge=0)
 
+    def chain(self, tier: str) -> list[str]:
+        """The tier's models in the order they are tried: the primary, then its fallbacks."""
+        primary = self.model_fast if tier == "fast" else self.model_balanced
+        return list(dict.fromkeys([primary, *self.fallback_models.get(tier, [])]))
+
     @model_validator(mode="after")
     def _priced(self) -> Self:
-        missing = [m for m in (self.model_fast, self.model_balanced) if m not in self.prices]
+        unknown = sorted(set(self.fallback_models) - set(TIERS))
+        if unknown:
+            raise ValueError(
+                f"MEDLENS_LLM__FALLBACK_MODELS has unknown tiers {', '.join(unknown)} "
+                f"(tiers: {', '.join(TIERS)})"
+            )
+        missing = [
+            f"{model} ({tier})"
+            for tier in TIERS
+            for model in self.chain(tier)
+            if model not in self.prices
+        ]
         if missing:
-            raise ValueError(f"prices has no entry for {', '.join(missing)}")
+            raise ValueError(
+                "MEDLENS_LLM__PRICES has no entry for "
+                + ", ".join(missing)
+                + ": every primary and fallback model needs one, e.g. "
+                '{"<model>": {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0}}'
+            )
         return self
 
 
@@ -534,6 +601,7 @@ class Settings(BaseSettings):
     s3: S3Settings
     auth: AuthSettings
     sms: SmsSettings = Field(default_factory=SmsSettings)
+    email: EmailSettings = Field(default_factory=EmailSettings)
     llm: LLMSettings = Field(default_factory=LLMSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     ratelimit: RateLimitSettings = Field(default_factory=RateLimitSettings)
@@ -559,6 +627,13 @@ class Settings(BaseSettings):
                     f"{env_var('sms', 'provider')} must be a real SMS provider: the console "
                     "provider writes one-time codes to the logs"
                 )
+            if self.email.provider == "console":
+                problems.append(
+                    f"{env_var('email', 'provider')} must be smtp: the console provider writes "
+                    "one-time codes to the logs"
+                )
+            if self.email.smtp_security == "none" and self.email.provider == "smtp":
+                problems.append(f"{env_var('email', 'smtp_security')} must not be none")
         if environment in {Environment.STAGING, Environment.PRODUCTION}:
             problems.extend(self._weak_secrets())
         if problems:

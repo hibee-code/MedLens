@@ -2,8 +2,8 @@
 
 | | Committed sample | Full snapshot |
 |---|---|---|
-| File | `seed/products.csv` | `greenbook-2026-11-03.csv.gz` (not in Git) |
-| Contents | 50 products | 8,680 products (all categories) |
+| File | `seed/products.csv` | `greenbook-2026-11-18.csv.gz` (not in Git) |
+| Contents | 50 products | 8,594 products (all categories) |
 | Integrity | reviewed in Git | SHA-256 in `seed/greenbook-snapshot.json`, checked on every import |
 | Used by | `make seed`, tests | `make greenbook-import-snapshot` (every environment) |
 
@@ -15,9 +15,11 @@
 * **Access:** the JSON endpoint the site's own product table calls
   (`GET /?start=…&length=…` with `X-Requested-With: XMLHttpRequest`), at one request per second
   with an identifying User-Agent. No login, key or rate-limit bypass.
-* **Retrieved:** 2026-11-03. 8,974 register rows: 19 had a missing or unrecognised NAFDAC number
-  (5 of them written like `4/1/9086`, a form we do not map) and 275 repeated a number already
-  present; 8,680 products remain. Categories: drugs, medical devices, vaccines and biologics,
+* **Retrieved:** 2026-11-18 (refresh of the 2026-11-03 export). 8,914 register rows: 20 had a
+  missing or unrecognised NAFDAC number (5 of them written like `4/1/9086`, a form we do not map)
+  and 300 repeated a number already present; 8,594 products remain. The sample changed by one
+  product (Voltaren Emulgel 04-0038 replaced Voltaren Suppository 04-7578) and one updated entry
+  (Zithromax 04-1388). Categories: drugs, medical devices, vaccines and biologics,
   herbals and nutraceuticals, veterinary.
 
 ## Terms

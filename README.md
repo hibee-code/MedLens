@@ -63,7 +63,8 @@ Step by step:
 ```bash
 make up              # full stack (API on 127.0.0.1:8000, docs at /docs)
 make migrate         # alembic upgrade head
-make seed SEED_ARGS="--staff-password <a long password>"   # products, batches, users, documents
+make seed            # products, organizations, batches, documents (no users)
+make bootstrap-admin EMAIL=you@example.ng   # invite the first platform admin
 make embeddings      # embed documents and reference images that lack vectors (workers must run)
 make eval            # scan accuracy and assistant metrics (see below)
 make check           # lint, mypy --strict, all tests with coverage (needs Docker)
@@ -90,14 +91,48 @@ Dependency groups: `dev` and `vision` by default; `ml` (ONNX Runtime, tokenizers
 worker image), `ml-export` (torch CPU, sentence-transformers, onnx: the export stage only),
 `ocr-benchmark` (PaddleOCR: never in an image).
 
-Seed users: `consumer` (+2348030000001, signs in with an SMS code, printed in the API log by
-the console SMS provider), `pharmacy.staff@medlens.test`, `manufacturer.staff@medlens.test`,
-`regulator.admin@medlens.test`, `platform.admin@medlens.test` and the other roles
-(`src/medlens/seed/__init__.py`). Regulators and platform admins must set up an authenticator
-app on first sign-in; `scripts/demo.sh` shows how.
+The seed loads products, organizations, batches and sample documents, and **no users**. The
+first platform admin is invited with `make bootstrap-admin EMAIL=you@example.ng` (local: the
+token is also printed); staff join organizations by invitation. `make demo` does all of it:
+it bootstraps `demo.admin@medlens.test`, invites a pharmacist, a manufacturer and a regulator
+into the seeded organizations, sets up their MFA (secrets and recovery codes in `.demo/`), and
+scans as guests for the consumer. The demo's addresses use the reserved `.test` domain, which
+the SMTP adapter never sends to. On a database seeded before 2026-11-19 (seeded staff and
+platform admin), run `make demo-reset ACCOUNTS=1 CONFIRM=1` once to erase those accounts.
 
-AI is **off by default**. To use Claude, set `MEDLENS_LLM__ENABLED=true` and
-`MEDLENS_LLM__ANTHROPIC_API_KEY` in `.env`; `MEDLENS_LLM__DAILY_BUDGET_USD` caps the spend.
+**Accounts.** Consumers sign themselves up and in with a 6-digit code, by SMS
+(`POST /auth/otp/request`, then `/auth/otp/verify`) or by e-mail (`/auth/email-otp/request`,
+then `/auth/email-otp/verify`); the account is created on first sign-in. Staff never sign up
+alone and never sign in with a code: they sign in with e-mail, password and an authenticator app
+(MFA is required for every staff account). A staff account always belongs to an organization
+with a role, through one of two doors: the public registration form
+(`POST /organizations/register` with the licence number and the first administrator, then
+`/organizations/register/verify` with the e-mailed code; nothing is granted until a platform
+admin checks the licence and verifies the organization), or an e-mailed invitation from the
+organization's administrator. The invitation link opens `GET /invitations/{token}` (who invites,
+which role, whether the address has an account); a new person creates the account with
+`POST /invitations/{token}/accept-new` (name and password; the invitation proves the address),
+then sets up MFA; an existing account signs in and uses `POST /invitations/accept` (an account
+that was a consumer sets a password there and is signed out, to come back with MFA). Platform
+admins create regulators and other organizations directly (`POST /organizations`) and invite
+further platform admins (`POST /admin/invitations`). The first platform admin is invited from
+the command line: `make bootstrap-admin EMAIL=you@example.ng` (refused once an active platform
+admin exists; the token is printed only in local and test environments, elsewhere it is only
+e-mailed). Set `MEDLENS_APP__FRONTEND_URL` for invitation e-mails to carry a link to
+`<url>/invitations/<token>`; without it they carry the code. Turning on MFA returns ten recovery
+codes, shown once (`POST /auth/mfa/verify` with `recovery_code` when the phone is lost). Platform
+admins manage accounts under `/admin/users` (find, suspend, reactivate, sign out everywhere,
+reset MFA), each action audited with a reason. Forgotten passwords: `/auth/password/forgot`, then
+`/auth/password/reset`. E-mail goes through `MEDLENS_EMAIL__*`: `console` locally (codes in
+the API log), any provider's SMTP server otherwise (Resend: see `.env.example`).
+
+AI is **off by default**. The provider is Google's Gemini API (free tier by default). To use
+it, set `MEDLENS_LLM__ENABLED=true` and `MEDLENS_LLM__GEMINI_API_KEY` (from Google AI Studio) in
+`.env`. Each tier tries its primary model, then `MEDLENS_LLM__FALLBACK_MODELS` in order (rate
+limits, safety blocks and repeated timeouts move to the next model; every model failing uses the
+feature's non-AI fallback). `MEDLENS_LLM__DAILY_BUDGET_USD` caps the metered spend. On the free
+tier Google may use prompts and answers to improve its products and have people review them:
+use a billed project before sending real pack photos or regulator-only documents.
 
 ## Main endpoints
 
@@ -284,7 +319,7 @@ that needed the LLM, mean latency, citation correctness, abstain accuracy and to
 `--barcode-check-scoring`) compare the scorer with and without those signals. The register
 fields are read only by Tesseract: `make eval-image` runs the scan eval inside the worker image,
 with production's Tesseract, as CI does. With
-`ANTHROPIC_API_KEY` set it uses Claude; otherwise stand-ins (the vision stand-in reads each
+`GEMINI_API_KEY` set it uses Gemini; otherwise stand-ins (the vision stand-in reads each
 pack's printed fields from the CSV). Where the models are installed (the worker image, or
 `make install-ml` and `make onnx`), the assistant's retrieval uses vectors and the reranker,
 as in production; the report says which.

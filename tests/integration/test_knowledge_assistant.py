@@ -252,10 +252,10 @@ async def test_a_grounded_answer_cites_its_sources(api: Api) -> None:
     assert citation["page"] == 1
     assert citation["published_on"] == "2026-10-14"
     request = provider.requests[0]
-    blocks = request.messages[0]["content"]
+    blocks = request.messages[0]["parts"]
     assert blocks[-1]["text"].startswith("<untrusted_question>")  # the question comes last
     assert any(block["text"].startswith("<untrusted_document id=") for block in blocks)
-    assert request.fallback  # balanced tier: server-side refusal fallback
+    assert request.model == "gemini-3.8-flash"  # the balanced tier's primary
 
 
 async def test_a_fabricated_citation_is_retried_then_refused(api: Api) -> None:
@@ -275,7 +275,7 @@ async def test_a_fabricated_citation_is_retried_then_refused(api: Api) -> None:
     assert response.json()["outcome"] == "insufficient_evidence"
     assert response.json()["reason"] == "citations_not_grounded"
     assert len(provider.requests) == 2
-    assert "rejected" in provider.requests[1].messages[0]["content"][-1]["text"]
+    assert "rejected" in provider.requests[1].messages[0]["parts"][-1]["text"]
 
 
 async def test_an_injected_document_cannot_make_the_assistant_claim_safety(api: Api) -> None:
@@ -296,7 +296,7 @@ async def test_an_injected_document_cannot_make_the_assistant_claim_safety(api: 
     assert response.json()["answer"] is None
     document_blocks = [
         block["text"]
-        for block in provider.requests[0].messages[0]["content"]
+        for block in provider.requests[0].messages[0]["parts"]
         if injection in block.get("text", "")
     ]
     assert document_blocks

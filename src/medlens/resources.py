@@ -9,6 +9,7 @@ from fastapi import Request
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from medlens.adapters.email import create_email_adapter
 from medlens.adapters.query_embedding import (
     CachedQueryEmbedder,
     CeleryQueryEmbedder,
@@ -20,12 +21,13 @@ from medlens.adapters.storage import S3Storage
 from medlens.ai.gateway.cache import AnswerCache
 from medlens.ai.gateway.gateway import AsyncLLMGateway
 from medlens.ai.gateway.ledger import AsyncLedger
-from medlens.ai.gateway.providers import AsyncAnthropicProvider
+from medlens.ai.gateway.providers import AsyncGeminiProvider, require_key
 from medlens.cache.redis import create_redis_client
 from medlens.core import telemetry
 from medlens.core.config import Settings
 from medlens.core.security import JwtKeyRing
 from medlens.db.session import create_db_engine, create_session_factory
+from medlens.ports.email import EmailPort
 from medlens.ports.embedding import QueryEmbeddingPort
 from medlens.ports.rerank import RerankingPort
 from medlens.ports.sms import SMSPort
@@ -43,6 +45,7 @@ class Resources:
     s3_bucket: str
     keyring: JwtKeyRing
     sms: SMSPort
+    email: EmailPort
     storage: StoragePort
     broker_redis: Redis  # Celery's broker database: queue depths
     scan_queue: QueueDepth
@@ -50,6 +53,7 @@ class Resources:
     query_embedder: QueryEmbeddingPort  # question embeddings, computed by a worker
     reranker: RerankingPort  # the cross-encoder, run by a worker
     rate_limiter: SlidingWindowLimiter
+    frontend_url: str | None = None  # invitation links: <frontend_url>/invitations/<token>
 
 
 @asynccontextmanager
@@ -66,10 +70,13 @@ async def open_resources(settings: Settings) -> AsyncIterator[Resources]:
         s3 = await stack.enter_async_context(open_s3_client(settings.s3))
         sms = create_sms_adapter(settings.sms)
         stack.push_async_callback(sms.aclose)
+        email = create_email_adapter(settings.email)
+        stack.push_async_callback(email.aclose)
         broker_redis = create_redis_client(settings.redis, db=settings.redis.broker_db)
         stack.push_async_callback(broker_redis.aclose)
         session_factory = create_session_factory(engine)
-        provider = AsyncAnthropicProvider(settings.llm)
+        require_key(settings.llm)  # AI on: a key is required, or startup stops here
+        provider = AsyncGeminiProvider(settings.llm)
         stack.push_async_callback(provider.aclose)
         from medlens.queue.celery_app import celery_app  # Celery loads its config lazily
 
@@ -81,6 +88,7 @@ async def open_resources(settings: Settings) -> AsyncIterator[Resources]:
             s3_bucket=settings.s3.bucket,
             keyring=JwtKeyRing(settings.auth),
             sms=sms,
+            email=email,
             storage=S3Storage(s3, settings.s3.bucket),
             broker_redis=broker_redis,
             scan_queue=QueueDepth(broker_redis),
@@ -102,6 +110,7 @@ async def open_resources(settings: Settings) -> AsyncIterator[Resources]:
                 celery_app, timeout_seconds=settings.knowledge.rerank_timeout_seconds
             ),
             rate_limiter=SlidingWindowLimiter(redis),
+            frontend_url=settings.app.frontend_url,
         )
 
 

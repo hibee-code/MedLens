@@ -165,8 +165,8 @@ async def test_platform_admins_see_ai_usage_and_budget(api: Api, app_settings: S
         CallRecord(
             route="assistant_answer",
             tier="balanced",
-            requested_model="claude-sonnet-5-5",
-            model="claude-sonnet-5-5",
+            requested_model="gemini-3.8-flash",
+            model="gemini-3.8-flash",
             prompt_version="assistant_answer@v1",
             usage=TokenUsage(input=3000, output=400, cache_read=2000),
             cost_usd=Decimal("0.010400"),

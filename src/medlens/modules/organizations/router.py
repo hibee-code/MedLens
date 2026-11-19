@@ -1,14 +1,22 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import Depends, Query, Response, status
+from fastapi import Depends, Path, Query, Response, status
 
 from medlens.core.geo import point_coordinates
 from medlens.core.openapi import problem_responses
 from medlens.core.pagination import Cursor, Page, PageParams, build_page, page_params
 from medlens.core.routing import api_v1_router
+from medlens.modules.auth.deps import AuthServiceDep, SessionCheckedUser
 from medlens.modules.auth.deps import Meta as RequestMetaDep
-from medlens.modules.auth.deps import SessionCheckedUser
+from medlens.modules.auth.router import login_response
+from medlens.modules.auth.schemas import (
+    EmailCodeSent,
+    EmailVerify,
+    LoginResponse,
+    MfaChallengeResponse,
+    TokenResponse,
+)
 from medlens.modules.organizations.branches import BranchService
 from medlens.modules.organizations.models import (
     Branch,
@@ -29,12 +37,17 @@ from medlens.modules.organizations.schemas import (
     BranchRead,
     BranchUpdate,
     InvitationAccept,
+    InvitationAccepted,
+    InvitationAcceptNew,
     InvitationCreate,
     InvitationCreated,
+    InvitationPreview,
     InvitationRead,
     MemberRead,
     OrganizationCreate,
     OrganizationRead,
+    OrganizationRegistration,
+    PlatformInvitationCreate,
     RoleAssignment,
 )
 from medlens.modules.organizations.service import MembershipService
@@ -42,7 +55,11 @@ from medlens.modules.rbac.access import Actor
 from medlens.modules.rbac.deps import get_actor, require_permissions
 from medlens.modules.rbac.permissions import Permission
 from medlens.modules.users.models import User
+from medlens.ratelimit.deps import limit_logins
 from medlens.resources import Resources, get_resources
+
+EMAIL_SENT = "If the address can receive e-mail, a code is on its way."
+REGISTRATION_CODE_SECONDS = 900  # the answer when no code is sent (as long as a real code)
 
 router = api_v1_router("/organizations", tags=["organizations"])
 
@@ -134,7 +151,7 @@ async def remove_member(
 
 # ------------------------------------------------------------------ organizations
 invitations_router = api_v1_router("/invitations", tags=["organizations"])
-OrgCreator = Annotated[Actor, Depends(get_actor)]
+SignedIn = Annotated[Actor, Depends(get_actor)]  # any signed-in user or API key
 PlatformAdmin = Annotated[
     Actor, Depends(require_permissions(Permission.PLATFORM_ADMIN, fresh=True))
 ]
@@ -142,6 +159,17 @@ Inviter = Annotated[Actor, Depends(require_permissions(Permission.MEMBER_INVITE,
 OrgManager = Annotated[Actor, Depends(require_permissions(Permission.ORG_MANAGE))]
 Params = Annotated[PageParams, Depends(page_params)]
 ResourcesDep = Annotated[Resources, Depends(get_resources)]
+TokenPath = Annotated[str, Path(min_length=16, max_length=128)]
+
+
+def _invitations(resources: Resources) -> InvitationService:
+    """With the e-mail channel and the link base, for the routes that send invitations."""
+    return InvitationService(
+        resources.session_factory,
+        resources.redis,
+        resources.email,
+        frontend_url=resources.frontend_url,
+    )
 
 
 def _organization(organization: Organization) -> OrganizationRead:
@@ -153,19 +181,81 @@ def _cursor(row: Organization | Invitation | Branch) -> Cursor:
 
 
 @router.post(
+    "/register",
+    response_model=EmailCodeSent,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Register your organization (public sign-up form)",
+    description=(
+        "For pharmacies, PPMVs, clinics, manufacturers and distributors: the organization, its "
+        "licence number and its first administrator, who gets a 6-digit code by e-mail (valid "
+        "15 minutes) to verify the address with `POST /organizations/register/verify`. The "
+        "organization starts as `pending_verification` and grants nothing until a platform "
+        "admin checks the licence and verifies it. An address that already has an account "
+        "gets no new account (the same answer). Rate-limited. Regulators are created by "
+        "platform admins."
+    ),
+    responses=problem_responses(409, 422, 429, 503),
+    dependencies=[Depends(limit_logins)],
+)
+async def register_organization(
+    body: OrganizationRegistration,
+    resources: ResourcesDep,
+    auth: AuthServiceDep,
+    meta: RequestMetaDep,
+) -> EmailCodeSent:
+    service = OrganizationService(resources.session_factory, resources.redis)
+    expires_in = REGISTRATION_CODE_SECONDS
+    if await service.register(body, meta):
+        expires_in = await auth.send_email_verification(body.admin.email)
+    return EmailCodeSent(detail=EMAIL_SENT, expires_in=expires_in)
+
+
+@router.post(
+    "/register/verify",
+    response_model=LoginResponse,
+    summary="Verify the administrator's e-mail address",
+    description=(
+        "Proves the address with the e-mailed code. The answer is an MFA enrolment challenge "
+        "(`mfa_enrolment_required`): every staff account sets up an authenticator app before "
+        "its first session. Five wrong attempts invalidate the code."
+    ),
+    responses={
+        200: {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "mfa_enrolment_required": {
+                            "summary": "Verified: set up MFA next",
+                            "value": MfaChallengeResponse.model_json_schema()["examples"][0],
+                        }
+                    }
+                }
+            }
+        },
+        **problem_responses(401, 403, 422, 429, 503),
+    },
+    dependencies=[Depends(limit_logins)],
+)
+async def verify_registration(
+    body: EmailVerify, auth: AuthServiceDep, meta: RequestMetaDep
+) -> TokenResponse | MfaChallengeResponse:
+    return login_response(await auth.verify_email(body.email, body.code, meta))
+
+
+@router.post(
     "",
     status_code=status.HTTP_201_CREATED,
     response_model=OrganizationRead,
-    summary="Register an organization",
+    summary="Create an organization (platform admins)",
     description=(
-        "Registers a pharmacy, PPMV, clinic, distributor or manufacturer; you become its "
-        "administrator. It starts as `pending_verification`: memberships grant nothing until a "
-        "platform admin verifies it. Regulators are created by platform admins only."
+        "Platform admins create organizations directly (regulators only this way), then invite "
+        "their administrators. Everyone else registers with `POST /organizations/register`. "
+        "Access tokens issued before your roles last changed are refused."
     ),
     responses=problem_responses(401, 403, 409, 422),
 )
 async def create_organization(
-    body: OrganizationCreate, actor: OrgCreator, resources: ResourcesDep, meta: RequestMetaDep
+    body: OrganizationCreate, actor: PlatformAdmin, resources: ResourcesDep, meta: RequestMetaDep
 ) -> OrganizationRead:
     service = OrganizationService(resources.session_factory, resources.redis)
     return _organization(await service.create(actor, body, meta))
@@ -182,7 +272,7 @@ async def create_organization(
     responses=problem_responses(401, 403, 422),
 )
 async def list_organizations(
-    actor: OrgCreator,
+    actor: SignedIn,
     resources: ResourcesDep,
     params: Params,
     org_status: Annotated[OrganizationStatus | None, Query(alias="status")] = None,
@@ -201,7 +291,7 @@ async def list_organizations(
     responses=problem_responses(401, 403, 404),
 )
 async def get_organization(
-    organization_id: UUID, actor: OrgCreator, resources: ResourcesDep
+    organization_id: UUID, actor: SignedIn, resources: ResourcesDep
 ) -> OrganizationRead:
     service = OrganizationService(resources.session_factory, resources.redis)
     return _organization(await service.get(actor, organization_id))
@@ -262,12 +352,15 @@ def _invitation(invitation: Invitation) -> InvitationRead:
     "/{organization_id}/invitations",
     status_code=status.HTTP_201_CREATED,
     response_model=InvitationCreated,
-    summary="Invite someone by phone number or e-mail address",
+    summary="Invite someone by e-mail",
     description=(
-        "Returns a token once; MedLens does not send it. The invitee accepts it with "
-        "`POST /api/v1/invitations/accept` while signed in with that phone number or e-mail "
-        "address. Invitations expire after 7 days; a new one replaces any open invitation for "
-        "the same person. The role must suit the organization and carry no permission you lack."
+        "E-mails the invitation (a link when MEDLENS_APP__FRONTEND_URL is set, else the code) "
+        "and returns its token once. A new person creates an account from it with "
+        "`POST /api/v1/invitations/{token}/accept-new`; someone with an account accepts it "
+        "with `POST /api/v1/invitations/accept`, signed in with that verified address. "
+        "Invitations expire after 7 days; a new one replaces any open invitation for the same "
+        "address. The role must suit the organization and carry no permission you lack. "
+        "Platform admins are invited with `POST /api/v1/admin/invitations`."
     ),
     responses=problem_responses(401, 403, 404, 422),
 )
@@ -278,8 +371,7 @@ async def create_invitation(
     resources: ResourcesDep,
     meta: RequestMetaDep,
 ) -> InvitationCreated:
-    service = InvitationService(resources.session_factory, resources.redis)
-    created = await service.create(actor, organization_id, body, meta)
+    created = await _invitations(resources).create(actor, organization_id, body, meta)
     return InvitationCreated(**_invitation(created.invitation).model_dump(), token=created.token)
 
 
@@ -317,14 +409,87 @@ async def revoke_invitation(
     await service.revoke(actor, organization_id, invitation_id, meta)
 
 
+@invitations_router.get(
+    "/{token}",
+    response_model=InvitationPreview,
+    summary="Look at an invitation",
+    description=(
+        "For the invitation's landing page (the e-mailed link): the organization, the role, the "
+        "masked address and whether that address already has an account. With an account, sign "
+        "in and use `POST /invitations/accept`; without one, `POST /invitations/{token}/"
+        "accept-new`. Unknown, used, revoked and expired invitations answer 404. Rate-limited."
+    ),
+    responses=problem_responses(404, 429, 503),
+    dependencies=[Depends(limit_logins)],
+)
+async def preview_invitation(token: TokenPath, resources: ResourcesDep) -> InvitationPreview:
+    service = InvitationService(resources.session_factory, resources.redis)
+    found = await service.preview(token)
+    invitation, organization = found.invitation, found.organization
+    return InvitationPreview(
+        organization_name=organization.name if organization else None,
+        organization_type=organization.type.value if organization else None,
+        role=invitation.role,
+        recipient=mask_recipient(invitation),
+        expires_at=invitation.expires_at,
+        account_exists=found.account_exists,
+    )
+
+
+@invitations_router.post(
+    "/{token}/accept-new",
+    response_model=LoginResponse,
+    summary="Create your account from an invitation",
+    description=(
+        "For a person without a MedLens account: creates it with the invited address (receiving "
+        "the invitation proves it), your name and a password, and joins the organization with "
+        "the invited role (or becomes a platform admin). The answer is an MFA enrolment "
+        "challenge (`mfa_enrolment_required`): every staff account sets up an authenticator "
+        "app before its first session. An address that already has an account answers 409: "
+        "sign in and use `POST /invitations/accept`. Rate-limited."
+    ),
+    responses={
+        200: {
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "mfa_enrolment_required": {
+                            "summary": "Account created: set up MFA next",
+                            "value": MfaChallengeResponse.model_json_schema()["examples"][0],
+                        }
+                    }
+                }
+            }
+        },
+        **problem_responses(404, 409, 422, 429, 503),
+    },
+    dependencies=[Depends(limit_logins)],
+)
+async def accept_invitation_new_account(
+    token: TokenPath,
+    body: InvitationAcceptNew,
+    resources: ResourcesDep,
+    auth: AuthServiceDep,
+    meta: RequestMetaDep,
+) -> TokenResponse | MfaChallengeResponse:
+    service = InvitationService(resources.session_factory, resources.redis)
+    accepted = await service.accept_new(
+        token, body.full_name, body.password.get_secret_value(), meta
+    )
+    return login_response(await auth.sign_in_invited(accepted.user.id, meta))
+
+
 @invitations_router.post(
     "/accept",
-    response_model=MemberRead,
-    summary="Accept an invitation",
+    response_model=InvitationAccepted,
+    summary="Accept an invitation with your account",
     description=(
-        "Joins the organization with the invited role. You must be signed in with the phone "
-        "number or e-mail address the invitation was sent to; unknown, expired, used and "
-        "other people's invitations all answer 404."
+        "Joins the organization with the invited role (or makes you a platform admin). You must "
+        "be signed in with the verified e-mail address the invitation was sent to; unknown, "
+        "expired, used and other people's invitations all answer 404. An account without a "
+        "password sets one here (`password`). An account that becomes a staff account here is "
+        "signed out everywhere (`signed_out: true`): staff sign in with e-mail, password and an "
+        "authenticator app, which it sets up on its next sign-in."
     ),
     responses=problem_responses(401, 403, 404, 409, 422),
 )
@@ -332,11 +497,78 @@ async def accept_invitation(
     body: InvitationAccept,
     principal: SessionCheckedUser,
     resources: ResourcesDep,
+    auth: AuthServiceDep,
     meta: RequestMetaDep,
-) -> MemberRead:
+) -> InvitationAccepted:
     service = InvitationService(resources.session_factory, resources.redis)
-    membership, user = await service.accept(principal.require_user_id(), body.token, meta)
-    return _member(membership, user)
+    password = body.password.get_secret_value() if body.password is not None else None
+    accepted = await service.accept(
+        principal.require_user_id(), body.token, password, meta, end_sessions=auth.end_sessions
+    )
+    if accepted.ended_sessions:
+        await auth.publish_revocations(list(accepted.ended_sessions))
+    return InvitationAccepted(
+        organization_id=accepted.organization_id,
+        role=accepted.role,
+        signed_out=accepted.became_staff,
+    )
+
+
+# ------------------------------------------------------------------ platform-admin invitations
+platform_invitations_router = api_v1_router("/admin/invitations", tags=["admin"])
+
+
+@platform_invitations_router.post(
+    "",
+    status_code=status.HTTP_201_CREATED,
+    response_model=InvitationCreated,
+    summary="Invite a platform admin",
+    description=(
+        "E-mails an invitation to become a platform admin and returns its token once. The "
+        "invitee creates an account from it (`POST /invitations/{token}/accept-new`) or, with "
+        "an account, accepts it signed in. A new invitation replaces an open one for the same "
+        "address. Access tokens issued before your roles last changed are refused."
+    ),
+    responses=problem_responses(401, 403, 422),
+)
+async def create_platform_invitation(
+    body: PlatformInvitationCreate,
+    actor: PlatformAdmin,
+    resources: ResourcesDep,
+    meta: RequestMetaDep,
+) -> InvitationCreated:
+    service = _invitations(resources)
+    created = await service.create_platform(actor.user_id, body.email, meta)
+    return InvitationCreated(**_invitation(created.invitation).model_dump(), token=created.token)
+
+
+@platform_invitations_router.get(
+    "",
+    response_model=Page[InvitationRead],
+    summary="List platform-admin invitations",
+    description="Every platform-admin invitation with its status, newest first; masked.",
+    responses=problem_responses(401, 403, 422),
+    dependencies=[Depends(require_permissions(Permission.PLATFORM_ADMIN, fresh=True))],
+)
+async def list_platform_invitations(
+    resources: ResourcesDep, params: Params
+) -> Page[InvitationRead]:
+    rows = await _invitations(resources).list_platform_page(params)
+    return build_page(rows, limit=params.limit, cursor_of=_cursor, to_item=_invitation)
+
+
+@platform_invitations_router.delete(
+    "/{invitation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Revoke a platform-admin invitation",
+    description="The token stops working immediately.",
+    responses=problem_responses(401, 403, 404, 409),
+)
+async def revoke_platform_invitation(
+    invitation_id: UUID, actor: PlatformAdmin, resources: ResourcesDep, meta: RequestMetaDep
+) -> None:
+    await _invitations(resources).revoke(actor, None, invitation_id, meta)
 
 
 # ------------------------------------------------------------------ branches
