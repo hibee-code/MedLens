@@ -111,7 +111,7 @@ jobs:
           version: ${{ env.UV_VERSION }}
           enable-cache: true
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libmagic1
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: ~/.cache/huggingface
           key: hf-${{ hashFiles('scripts/export_onnx.py', 'uv.lock') }}
