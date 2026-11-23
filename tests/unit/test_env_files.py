@@ -95,6 +95,14 @@ def test_template_holds_only_placeholders_for_required_secrets() -> None:
             assert value == "", f"{key}: the template holds no values"
 
 
+def test_every_template_value_is_empty_or_only_the_placeholder() -> None:
+    """Nothing in the template may look like a real environment: no user names, key ids,
+    hosts or other values next to the placeholder (JSON brackets and quotes aside)."""
+    for key, value in template_values().items():
+        leftover = re.sub(r'[{}":,\s]', "", value.replace(SECRET_PLACEHOLDER, ""))
+        assert leftover == "", f"{key}: holds {leftover!r} besides the placeholder"
+
+
 def test_template_placeholders_have_the_settings_shape() -> None:
     """Key maps stay valid JSON, so a copied template fails on the placeholder, not on parsing."""
     fields = app_fields()

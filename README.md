@@ -124,7 +124,7 @@ codes, shown once (`POST /auth/mfa/verify` with `recovery_code` when the phone i
 admins manage accounts under `/admin/users` (find, suspend, reactivate, sign out everywhere,
 reset MFA), each action audited with a reason. Forgotten passwords: `/auth/password/forgot`, then
 `/auth/password/reset`. E-mail goes through `MEDLENS_EMAIL__*`: `console` locally (codes in
-the API log), any provider's SMTP server otherwise (Resend: see `.env.example`).
+the API log), any provider's SMTP server otherwise (`MEDLENS_EMAIL__SMTP_*`, values from the provider's SMTP settings).
 
 AI is **off by default**. The provider is Google's Gemini API (free tier by default). To use
 it, set `MEDLENS_LLM__ENABLED=true` and `MEDLENS_LLM__GEMINI_API_KEY` (from Google AI Studio) in
